@@ -3,19 +3,19 @@ import multer from "multer";
 import fs from "fs";
 import type { PlayerDatabase } from "@fanta/shared";
 import { importExcelFile } from "../importExcel";
-import { loadPlayerDatabase, mergePlayerDatabase, savePlayerDatabase } from "../store";
+import { store, mergePlayerDatabase } from "../persistence";
 
 const upload = multer({ dest: "/tmp/fanta-uploads/" });
 
 export function importRouter(onUpdated: (db: PlayerDatabase) => void): Router {
   const router = Router();
 
-  router.post("/import", upload.single("file"), (req, res) => {
+  router.post("/import", upload.single("file"), async (req, res) => {
     if (!req.file) return res.status(400).json({ error: "file richiesto (multipart field 'file')" });
     try {
       const fresh = importExcelFile(req.file.path);
-      const merged = mergePlayerDatabase(loadPlayerDatabase(), fresh);
-      savePlayerDatabase(merged);
+      const merged = mergePlayerDatabase(await store.loadPlayerDatabase(), fresh);
+      await store.savePlayerDatabase(merged);
       onUpdated(merged);
       res.json({ ok: true, meta: merged.meta, playerCount: merged.players.length });
     } catch (e: any) {

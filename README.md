@@ -14,8 +14,10 @@ Excel cache (che nel file non sono presenti).
 packages/shared   motore deterministico (formule, budget dinamico, mercato,
                   scarsità, matching pluriruolo, decisione RILANCIA/MOLLA,
                   nomination engine, opponent modelling, what-if, parser NL)
-packages/server   API Express + SQLite (better-sqlite3). Importa l'Excel,
-                  persiste il Player Database e le AuctionSession.
+packages/server   API Express. Importa l'Excel, persiste il Player Database
+                  e le AuctionSession su SQLite in locale, o su Postgres
+                  quando è impostata la variabile DATABASE_URL (per un
+                  deploy cloud senza disco persistente, es. Render free).
 apps/web          React/Vite: schermata Live, wizard nuova asta, chat.
 ```
 
@@ -50,6 +52,74 @@ e salva il Player Database in `packages/server/data/fantacalcio.sqlite`
 caricare una versione aggiornata dell'Excel durante la stagione, usa
 `POST /api/import` (multipart `file`): il merge mantiene stabili gli id dei
 giocatori già presenti in una sessione attiva (sezione 53).
+
+## Deploy sul cloud (gratis): Render + Supabase
+
+Il piano gratuito di Render non ha un disco permanente, quindi in produzione
+il Player Database e le AuctionSession vanno su un database Postgres esterno
+gratuito (Supabase) invece che su SQLite. Il codice sceglie da solo il
+backend giusto: se la variabile d'ambiente `DATABASE_URL` è impostata usa
+Postgres, altrimenti usa SQLite in locale (`packages/server/src/persistence`).
+
+### 1. Crea il database gratuito su Supabase
+
+1. Vai su [supabase.com](https://supabase.com) e crea un account gratuito.
+2. **New project** → dai un nome, imposta una password del database (salvala,
+   ti servirà) e scegli una regione vicina a te. Aspetta 1-2 minuti che il
+   progetto sia pronto.
+3. Vai su **Project Settings → Database → Connection string**, scheda
+   **URI**, e scegli **Connection pooling** (porta 6543, modalità
+   `transaction`) — è la stringa pensata per un backend serverless/free come
+   Render. Copiala: è del tipo
+   `postgresql://postgres.xxxx:[PASSWORD]@aws-0-eu-central-1.pooler.supabase.com:6543/postgres`.
+4. Sostituisci `[PASSWORD]` con la password scelta al punto 2. Questa stringa
+   completa è il valore da usare come `DATABASE_URL`.
+
+### 2. Metti il codice su GitHub
+
+Il repository è già pronto (incluso `render.yaml`); ti serve solo che sia su
+GitHub, così Render può collegarcisi. Se non l'hai già fatto: crea un
+repository su GitHub e pusha questo progetto.
+
+### 3. Crea il servizio su Render
+
+1. Vai su [render.com](https://render.com), crea un account gratuito
+   (accesso diretto con GitHub è il più rapido).
+2. **New → Blueprint**, scegli il repository GitHub di questo progetto.
+   Render legge `render.yaml` da solo e propone un web service chiamato
+   `fantacalcio-asta` con piano **Free**.
+3. Quando richiesto, incolla nel campo `DATABASE_URL` la stringa di
+   connessione di Supabase preparata al punto 1.
+4. **Apply / Create**. Il primo deploy fa la build completa (installa le
+   dipendenze, compila motore/frontend/server) e può richiedere qualche
+   minuto: alla fine Render ti dà un link tipo
+   `https://fantacalcio-asta.onrender.com`. Aprilo: al primo avvio l'app
+   importa da sola l'Excel incluso nel repo e crea le tabelle su Supabase.
+
+Da quel momento in poi l'app vive tutta lì: nessuna installazione locale,
+accessibile da telefono o computer con quel link.
+
+### Limite del piano free da conoscere
+
+Render "addormenta" il servizio dopo ~15 minuti senza richieste; il primo
+caricamento dopo una pausa lunga può richiedere 20-30 secondi per
+risvegliarsi. Durante un'asta attiva (richieste continue) questo non
+succede — è un problema solo se apri il link per la primissima volta dopo
+ore di inattività.
+
+### Aggiornare l'Excel una volta online
+
+Usa la stessa app: dalla schermata Home/Live non c'è ancora un pulsante
+dedicato, ma puoi caricare un nuovo file con una richiesta diretta all'API,
+ad esempio da un terminale (anche dal telefono con un'app tipo Termux, o da
+un PC):
+
+```bash
+curl -F "file=@nuovo_listone.xlsx" https://fantacalcio-asta.onrender.com/api/import
+```
+
+Il merge mantiene stabili gli id dei giocatori già presenti in una sessione
+attiva (sezione 53).
 
 ## Cosa è implementato
 

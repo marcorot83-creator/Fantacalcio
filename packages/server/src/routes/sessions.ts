@@ -1,18 +1,26 @@
-import { Router } from "express";
-import type { AuctionEventType, PlayerDatabase } from "@fanta/shared";
+import { Router, type Request, type Response, type NextFunction } from "express";
+import type { AuctionEventType, AuctionSession, PlayerDatabase, Player } from "@fanta/shared";
 import {
   createNewAuctionSession, resetSessionInPlace, applyAuctionEvent, computeBidRecommendation,
   findAlternatives, simulateWhatIf, suggestNomination, buildAllOpponentReports, buildOpponentReport,
   runFeasibilityChecks, buildStatusSummary, renderStatusText, explainWhyForMyRoster, parseCommand,
   getMyManager, computeDynamicMax, netSurplus, slotsStillToBuy, findOpenSlotForFamily,
 } from "@fanta/shared";
-import { getSession, listSessions, saveSession, archiveSession, deleteSession } from "../store";
+import { store } from "../persistence";
+
+type Handler = (req: Request, res: Response) => Promise<unknown> | unknown;
+
+function asyncHandler(fn: Handler) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    Promise.resolve(fn(req, res)).catch(next);
+  };
+}
 
 export function sessionsRouter(getDb: () => PlayerDatabase): Router {
   const router = Router();
 
-  function requireSession(id: string) {
-    const session = getSession(id);
+  async function requireSession(id: string): Promise<AuctionSession> {
+    const session = await store.getSession(id);
     if (!session) {
       const err: any = new Error("Sessione non trovata");
       err.status = 404;
@@ -21,102 +29,102 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     return session;
   }
 
-  router.get("/sessions", (_req, res) => {
-    res.json(listSessions());
-  });
+  router.get("/sessions", asyncHandler(async (_req, res) => {
+    res.json(await store.listSessions());
+  }));
 
-  router.get("/sessions/:id", (req, res) => {
-    res.json(requireSession(req.params.id));
-  });
+  router.get("/sessions/:id", asyncHandler(async (req, res) => {
+    res.json(await requireSession(req.params.id));
+  }));
 
   // Section 77: wizard -> create session.
-  router.post("/sessions", (req, res) => {
+  router.post("/sessions", asyncHandler(async (req, res) => {
     const { name, settings, managerNames, myManagerIndex } = req.body ?? {};
     const session = createNewAuctionSession(getDb(), { name, settings, managerNames, myManagerIndex });
-    saveSession(session);
+    await store.saveSession(session);
     res.status(201).json(session);
-  });
+  }));
 
   // Section 78: reset rapido — same id, wiped state.
-  router.post("/sessions/:id/reset", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.post("/sessions/:id/reset", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const fresh = resetSessionInPlace(getDb(), session);
-    saveSession(fresh);
+    await store.saveSession(fresh);
     res.json(fresh);
-  });
+  }));
 
-  router.post("/sessions/:id/archive", (req, res) => {
-    archiveSession(req.params.id);
+  router.post("/sessions/:id/archive", asyncHandler(async (req, res) => {
+    await store.archiveSession(req.params.id);
     res.json({ ok: true });
-  });
+  }));
 
-  router.delete("/sessions/:id", (req, res) => {
-    deleteSession(req.params.id);
+  router.delete("/sessions/:id", asyncHandler(async (req, res) => {
+    await store.deleteSession(req.params.id);
     res.json({ ok: true });
-  });
+  }));
 
-  router.get("/sessions/:id/status", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/status", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const summary = buildStatusSummary(session);
     res.json({ summary, text: renderStatusText(summary) });
-  });
+  }));
 
-  router.get("/sessions/:id/feasibility", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/feasibility", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     res.json(runFeasibilityChecks(session, getDb().players));
-  });
+  }));
 
-  router.get("/sessions/:id/opponents", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/opponents", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     res.json(buildAllOpponentReports(session, getDb().players));
-  });
+  }));
 
-  router.get("/sessions/:id/opponents/:managerId", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/opponents/:managerId", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const mgr = session.managers.find((m) => m.id === req.params.managerId);
     if (!mgr) return res.status(404).json({ error: "manager not found" });
     res.json(buildOpponentReport(mgr, getDb().players));
-  });
+  }));
 
   // --------------------- Events (section 25) ---------------------
-  router.post("/sessions/:id/events", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.post("/sessions/:id/events", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const { type, playerId, price, managerId, payload } = req.body ?? {};
     try {
       const { session: next, event } = applyAuctionEvent(session, getDb(), {
         type: type as AuctionEventType, playerId, price, managerId, payload,
       });
-      saveSession(next);
+      await store.saveSession(next);
       res.status(201).json({ session: next, event });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
-  });
+  }));
 
-  router.post("/sessions/:id/undo", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.post("/sessions/:id/undo", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     try {
       const { session: next, event } = applyAuctionEvent(session, getDb(), { type: "UNDO" });
-      saveSession(next);
+      await store.saveSession(next);
       res.json({ session: next, event });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
-  });
+  }));
 
   // --------------------- Recommendation engine (section 29/30) ---------------------
-  router.get("/sessions/:id/recommendation/:playerId", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/recommendation/:playerId", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const db = getDb();
     const player = db.players.find((p) => p.id === req.params.playerId);
     if (!player) return res.status(404).json({ error: "player not found" });
     const currentBid = Number(req.query.currentBid ?? player.computed.prezzoObiettivo);
     const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState });
     res.json(rec);
-  });
+  }));
 
-  router.get("/sessions/:id/alternatives/:playerId", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/alternatives/:playerId", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const db = getDb();
     const player = db.players.find((p) => p.id === req.params.playerId);
     if (!player) return res.status(404).json({ error: "player not found" });
@@ -128,37 +136,37 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       limit: req.query.limit ? Number(req.query.limit) : 5,
     });
     res.json(alts);
-  });
+  }));
 
-  router.get("/sessions/:id/whatif", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/whatif", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const db = getDb();
     const player = db.players.find((p) => p.id === req.query.playerId);
     if (!player) return res.status(404).json({ error: "player not found" });
     const price = Number(req.query.price ?? 0);
     res.json(simulateWhatIf({ player, hypotheticalPrice: price, session }));
-  });
+  }));
 
-  router.get("/sessions/:id/nomination", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/nomination", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const db = getDb();
     res.json(suggestNomination({ players: db.players, graduatorie: db.graduatorie, session }));
-  });
+  }));
 
-  router.get("/sessions/:id/players/:playerId/why", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.get("/sessions/:id/players/:playerId/why", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const db = getDb();
     const player = db.players.find((p) => p.id === req.params.playerId);
     if (!player) return res.status(404).json({ error: "player not found" });
     res.json({ reasons: explainWhyForMyRoster({ player, session, graduatorie: db.graduatorie }) });
-  });
+  }));
 
   // --------------------- Conversational layer (section 26/60-61) ---------------------
   // Unambiguous "closes the loop" commands are applied immediately (no extra
   // confirmation step), matching the direct "ACQUISTO REGISTRATO" style from
   // sections 60/61/71 — the parser already refuses to guess when ambiguous.
-  router.post("/sessions/:id/chat", (req, res) => {
-    const session = requireSession(req.params.id);
+  router.post("/sessions/:id/chat", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
     const db = getDb();
     const { text } = req.body ?? {};
     if (!text || typeof text !== "string") return res.status(400).json({ error: "text richiesto" });
@@ -170,19 +178,19 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       if (parsed.intent === "WON_BY_ME" && parsed.playerId && parsed.price != null) {
         const player = db.players.find((p) => p.id === parsed.playerId)!;
         const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_WON_BY_ME", playerId: player.id, price: parsed.price });
-        saveSession(next);
-        return res.json({ parsed, session: next, event, reply: renderWonByMeReply(next, player, parsed.price) });
+        await store.saveSession(next);
+        return res.json({ parsed, session: next, event, reply: renderWonByMeReply(next, player) });
       }
       if (parsed.intent === "SOLD_TO_OPPONENT" && parsed.playerId && parsed.price != null && parsed.managerId) {
         const player = db.players.find((p) => p.id === parsed.playerId)!;
         const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_SOLD_TO_OPPONENT", playerId: player.id, price: parsed.price, managerId: parsed.managerId });
-        saveSession(next);
+        await store.saveSession(next);
         return res.json({ parsed, session: next, event, reply: renderLostReply(next, db, player, parsed.price, parsed.managerId) });
       }
       if (parsed.intent === "UNDO") {
         try {
           const { session: next, event } = applyAuctionEvent(session, db, { type: "UNDO" });
-          saveSession(next);
+          await store.saveSession(next);
           return res.json({ parsed, session: next, event, reply: "Ultimo evento annullato." });
         } catch (e: any) {
           return res.json({ parsed, reply: e.message });
@@ -191,9 +199,9 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     }
 
     res.json(buildChatResponse(parsed, session, db));
-  });
+  }));
 
-  function renderWonByMeReply(session: ReturnType<typeof requireSession>, player: ReturnType<typeof getDb>["players"][number], price: number): string {
+  function renderWonByMeReply(session: AuctionSession, player: Player): string {
     const myManager = getMyManager(session);
     const realloc = session.strategyState.reallocationLog.at(-1);
     const slot = session.rosterSlots.find((s) => s.playerId === player.id);
@@ -211,7 +219,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     return lines.join("\n");
   }
 
-  function renderLostReply(session: ReturnType<typeof requireSession>, db: PlayerDatabase, player: ReturnType<typeof getDb>["players"][number], price: number, managerId: string): string {
+  function renderLostReply(session: AuctionSession, db: PlayerDatabase, player: Player, price: number, managerId: string): string {
     const managerName = session.managers.find((m) => m.id === managerId)?.name ?? managerId;
     const scarcity = session.marketState.scarcity[player.computed.famiglia433];
     const myManager = getMyManager(session);
@@ -226,7 +234,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     return lines.join("\n");
   }
 
-  function buildChatResponse(parsed: ReturnType<typeof parseCommand>, session: ReturnType<typeof requireSession>, db: PlayerDatabase) {
+  function buildChatResponse(parsed: ReturnType<typeof parseCommand>, session: AuctionSession, db: PlayerDatabase) {
     if (parsed.playerAmbiguous && parsed.playerAmbiguous.length > 1) {
       return {
         parsed,
@@ -316,13 +324,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
         return { parsed, nomination: suggestion, reply: `CHIAMA ${suggestion.nome}.\n${suggestion.reason}` };
       }
       case "OPPONENTS_NEED": {
-        const fam = parsed.family;
         const reports = buildAllOpponentReports(session, db.players);
-        const needing = session.managers.filter((m) => !m.isMe).filter((m) => {
-          if (!fam) return true;
-          const slotsForFam = session.rosterSlots.filter((s) => s.famiglia === fam);
-          return true; // opponent roster slots aren't modeled per-manager; approximate via low spend on family
-        });
         return { parsed, reply: `Dati sugli avversari disponibili in /avversari (spesa per reparto stimata).`, opponents: reports };
       }
       case "OPPONENTS_AVG_SPEND": {

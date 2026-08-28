@@ -3,7 +3,10 @@ services:
     name: fantacalcio-asta
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    # --include=dev is required: NODE_ENV=production during the build (set
+    # below, and also applied by Render by default) makes plain `npm install`
+    # skip devDependencies, which is where typescript/@types/* live.
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start
     envVars:
       - key: NODE_ENV

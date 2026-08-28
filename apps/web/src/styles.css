@@ -158,8 +158,12 @@ a { color: var(--accent); }
 .alt-item .top { display: flex; justify-content: space-between; font-weight: 600; }
 .alt-item .sub { color: var(--muted); font-size: 0.78rem; }
 
-.chat-footer { border-top: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; max-height: 40vh; }
-.chat-log { overflow-y: auto; padding: 10px 16px; flex: 1; font-size: 0.88rem; }
+.chat-footer { border-top: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; height: 160px; flex-shrink: 0; }
+.chat-log { overflow-y: auto; padding: 10px 16px; flex: 1; font-size: 0.88rem; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.chat-log::-webkit-scrollbar { width: 8px; }
+.chat-log::-webkit-scrollbar-track { background: transparent; }
+.chat-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.chat-log::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 .chat-msg { margin-bottom: 10px; white-space: pre-wrap; }
 .chat-msg.user { color: var(--muted); }
 .chat-msg.bot { color: var(--text); }

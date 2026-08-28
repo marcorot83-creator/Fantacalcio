@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface ChatMsg { role: "user" | "bot"; text: string; pendingEvent?: any }
 
@@ -6,6 +6,12 @@ export default function Chat({
   log, onSend, onConfirmPending,
 }: { log: ChatMsg[]; onSend: (text: string) => void; onConfirmPending: (pending: any) => void }) {
   const [text, setText] = useState("");
+  const logRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [log]);
 
   function submit() {
     if (!text.trim()) return;
@@ -15,7 +21,7 @@ export default function Chat({
 
   return (
     <div className="chat-footer">
-      <div className="chat-log">
+      <div className="chat-log" ref={logRef}>
         {log.length === 0 && (
           <div className="chat-msg bot">
             Dimmi chi viene chiamato. Esempi: "Chiamano Malen", "Siamo a 137", "Preso Hojlund a 140", "Chi chiamo?",

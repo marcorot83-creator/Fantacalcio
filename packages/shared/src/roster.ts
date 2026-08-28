@@ -1,49 +1,31 @@
 import type { Famiglia433, Player, RosterSlot } from "./types";
+import { eligibleMantraRoles, type MantraRole } from "./mantra";
+import { mantraRoleToFamiglia433 } from "./rosterStructure";
 
-const TOKEN_TO_FAMILY: Record<string, Famiglia433> = {
-  Por: "Por",
-  Pc: "Pc",
-  A: "A",
-  M: "M",
-  C: "C",
-  Dd: "Dd",
-  Ds: "Ds",
-  Dc: "Dc",
-  E: "Jolly",
-  W: "Jolly",
-  T: "Jolly",
-  B: "Jolly",
-};
-
-/** All strategic families a player can plausibly cover, from the FULL R.MANTRA string (section 23). */
+/** Backward-compat coarse grouping (section 30: superseded by eligibleMantraRoles for slot matching). */
 export function eligibleFamilies(ruoloMantra: string): Famiglia433[] {
-  const tokens = (ruoloMantra || "").split("/").map((t) => t.trim());
-  const fams = new Set<Famiglia433>();
-  for (const t of tokens) {
-    const f = TOKEN_TO_FAMILY[t];
-    if (f) fams.add(f);
-  }
-  if (fams.size === 0) fams.add("Non433");
-  return [...fams];
+  const roles = eligibleMantraRoles(ruoloMantra);
+  if (roles.length === 0) return ["Non433"];
+  return [...new Set(roles.map(mantraRoleToFamiglia433))];
 }
 
 /**
  * Bipartite matching between acquired players and open roster slots, maximizing
  * coverage while preferring to spend flexible (pluriruolo) players on slots that
  * would otherwise stay uncovered — i.e. specialists fill the slots only they can
- * fill, versatile players plug whatever gap remains (section 23).
+ * fill, versatile players plug whatever gap remains (section 23). Matches on the
+ * fine-grained Mantra role each slot actually needs, not the coarse family.
  */
 export function assignPlayersToSlots(
   players: { playerId: string; ruoloMantra: string }[],
-  slots: RosterSlot[]
+  slots: { slotKey: string; role: MantraRole }[]
 ): Record<string, string | null> {
-  // Only movement/keeper slots that exist in the plan; Por handled the same way.
   const slotIds = slots.map((s) => s.slotKey);
-  const slotFamily = new Map(slots.map((s) => [s.slotKey, s.famiglia]));
+  const slotRole = new Map<string, MantraRole>(slots.map((s) => [s.slotKey, s.role]));
 
   const eligibleSlotsFor = (ruoloMantra: string): string[] => {
-    const fams = new Set(eligibleFamilies(ruoloMantra));
-    return slotIds.filter((sid) => fams.has(slotFamily.get(sid)!));
+    const roles = new Set(eligibleMantraRoles(ruoloMantra));
+    return slotIds.filter((sid) => roles.has(slotRole.get(sid)!));
   };
 
   // Process specialists (fewest eligible slots) first so flexible players are
@@ -85,7 +67,7 @@ export function assignPlayersToSlots(
 }
 
 export function slotLabel(slot: RosterSlot): string {
-  return `${slot.famiglia} ${slot.slotKey.replace(/[A-Za-z]+/, "")} — ${slot.profilo}`;
+  return `${slot.role} ${slot.slotKey.replace(/[A-Za-z]+/, "")} — ${slot.profilo}`;
 }
 
 export function findPlayer(players: Player[], playerId: string): Player | undefined {

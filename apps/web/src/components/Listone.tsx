@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, type ListonePlayer } from "../api";
 import type { Famiglia433, Player } from "@fanta/shared";
 
 const FAMIGLIE: { key: Famiglia433 | ""; label: string }[] = [
@@ -36,7 +36,8 @@ export default function Listone(props: {
   const [famiglia, setFamiglia] = useState<Famiglia433 | "">(props.initialFamiglia ?? "");
   const [sortBy, setSortBy] = useState("indiceFanta");
   const [q, setQ] = useState("");
-  const [players, setPlayers] = useState<Player[]>([]);
+  const [onlyAvailable, setOnlyAvailable] = useState(false);
+  const [players, setPlayers] = useState<ListonePlayer[]>([]);
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
@@ -45,7 +46,10 @@ export default function Listone(props: {
     setLoading(true);
     const t = setTimeout(() => {
       api
-        .listone(props.sessionId, { famiglia: famiglia || undefined, sortBy, order: "desc", q: q || undefined, limit: 300 })
+        .listone(props.sessionId, {
+          famiglia: famiglia || undefined, sortBy, order: "desc", q: q || undefined, limit: 300,
+          onlyAvailable: onlyAvailable ? "true" : undefined,
+        })
         .then((res) => {
           if (cancelled) return;
           setPlayers(res.players);
@@ -57,13 +61,13 @@ export default function Listone(props: {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [props.sessionId, famiglia, sortBy, q]);
+  }, [props.sessionId, famiglia, sortBy, q, onlyAvailable]);
 
   return (
     <div className="modal-backdrop" onClick={props.onClose}>
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <h2>Listone — giocatori ancora liberi</h2>
+          <h2>Listone</h2>
           <button onClick={props.onClose}>Chiudi</button>
         </div>
 
@@ -86,8 +90,16 @@ export default function Listone(props: {
               <option key={s.key} value={s.key}>Ordina per {s.label}</option>
             ))}
           </select>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.85rem", color: "var(--muted)" }}>
+            <input type="checkbox" checked={onlyAvailable} onChange={(e) => setOnlyAvailable(e.target.checked)} />
+            solo disponibili
+          </label>
           <span style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
-            {loading ? "Caricamento…" : `${count} disponibili`}
+            {loading ? "Caricamento…" : `${count} giocatori`}
+          </span>
+          <span className="listone-legend">
+            <span className="legend-dot legend-me" /> presi da te
+            <span className="legend-dot legend-other" /> presi da altri
           </span>
         </div>
 
@@ -110,25 +122,37 @@ export default function Listone(props: {
               </tr>
             </thead>
             <tbody>
-              {players.map((p) => (
-                <tr key={p.id}>
-                  <td className="strong">{p.nome}</td>
-                  <td className="muted">{p.squadra}</td>
-                  <td className="muted">{p.ruoloMantra}</td>
-                  <td>{p.computed.titolarita}%</td>
-                  <td>{p.computed.fascia}</td>
-                  <td>{p.computed.tierGruppo}</td>
-                  <td>{p.computed.indiceFanta}</td>
-                  <td>{p.computed.prezzoAtteso}</td>
-                  <td>{p.computed.prezzoObiettivo}</td>
-                  <td>{p.computed.offertaMaxBase}</td>
-                  <td className={p.rischio && p.rischio !== "BASSO" ? "warn" : "muted"}>{p.rischio || "-"}</td>
-                  <td className="listone-actions">
-                    <button onClick={() => props.onDetail(p.id)}>Dettagli</button>
-                    <button className="primary" disabled={props.readOnly} onClick={() => props.onNominate(p)}>Chiama</button>
-                  </td>
-                </tr>
-              ))}
+              {players.map((p) => {
+                const taken = !!p.ownership;
+                const rowClass = p.ownership ? (p.ownership.byMe ? "listone-row-me" : "listone-row-other") : "";
+                return (
+                  <tr key={p.id} className={rowClass}>
+                    <td className="strong">
+                      {p.nome}
+                      {p.ownership && (
+                        <div className="listone-owner">
+                          {p.ownership.byMe ? "tua" : p.ownership.managerName ?? "altro manager"}
+                          {p.ownership.paidPrice != null ? ` · ${p.ownership.paidPrice}` : ""}
+                        </div>
+                      )}
+                    </td>
+                    <td className="muted">{p.squadra}</td>
+                    <td className="muted">{p.ruoloMantra}</td>
+                    <td>{p.computed.titolarita}%</td>
+                    <td>{p.computed.fascia}</td>
+                    <td>{p.computed.tierGruppo}</td>
+                    <td>{p.computed.indiceFanta}</td>
+                    <td>{p.computed.prezzoAtteso}</td>
+                    <td>{p.computed.prezzoObiettivo}</td>
+                    <td>{p.computed.offertaMaxBase}</td>
+                    <td className={p.rischio && p.rischio !== "BASSO" ? "warn" : "muted"}>{p.rischio || "-"}</td>
+                    <td className="listone-actions">
+                      <button onClick={() => props.onDetail(p.id)}>Dettagli</button>
+                      <button className="primary" disabled={props.readOnly || taken} onClick={() => props.onNominate(p)}>Chiama</button>
+                    </td>
+                  </tr>
+                );
+              })}
               {!loading && players.length === 0 && (
                 <tr>
                   <td colSpan={12} className="empty-state">Nessun giocatore trovato.</td>

@@ -61,6 +61,7 @@ a { color: var(--accent); }
 /* ---------- Wizard ---------- */
 .wizard { max-width: 640px; margin: 40px auto; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px; }
 .wizard h2 { margin-top: 0; }
+.wizard h3 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 22px 0 10px; }
 .wizard .field { margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px; }
 .wizard .field label { color: var(--muted); font-size: 0.85rem; }
 .wizard .row3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
@@ -69,6 +70,32 @@ a { color: var(--accent); }
 .wizard .steps div { flex: 1; height: 4px; border-radius: 2px; background: var(--border); }
 .wizard .steps div.active { background: var(--accent); }
 .wizard .actions { display: flex; justify-content: space-between; margin-top: 24px; }
+.wizard-wide { max-width: 820px; }
+.wizard-step-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: .06em; margin: -12px 0 18px; }
+.wizard-hint { color: var(--muted); font-size: 0.88rem; margin: -6px 0 16px; line-height: 1.5; }
+
+.formation-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.formation-card { padding: 14px 10px; font-size: 0.95rem; font-weight: 600; text-align: center; }
+.formation-card.selected { background: var(--accent); border-color: var(--accent); color: white; }
+
+.strategy-cards, .style-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.strategy-card, .style-card { text-align: left; padding: 14px; display: flex; flex-direction: column; gap: 6px; }
+.strategy-card.selected, .style-card.selected { border-color: var(--accent); background: rgba(79, 140, 255, 0.12); }
+.strategy-card-name { font-weight: 700; }
+.strategy-card-desc { color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
+
+.summary-config { display: flex; flex-direction: column; gap: 8px; background: var(--panel-2); border-radius: 10px; padding: 14px 16px; margin-bottom: 8px; }
+.summary-config .label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; margin-right: 10px; display: inline-block; min-width: 90px; }
+
+.priorities { display: flex; flex-direction: column; gap: 6px; }
+.priority-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.88rem; padding: 4px 0; }
+.priority-role { color: var(--text); font-weight: 600; }
+.priority-stars { color: var(--yellow); letter-spacing: 1px; }
+
+.budget-breakdown { display: flex; flex-direction: column; gap: 6px; }
+.budget-row { display: grid; grid-template-columns: 70px 1fr 40px; align-items: center; gap: 10px; font-size: 0.85rem; }
+.budget-row-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.budget-row-bar div { height: 100%; background: var(--accent); }
 
 /* ---------- Live layout ---------- */
 .live-shell { display: flex; flex-direction: column; height: 100vh; }
@@ -159,6 +186,15 @@ a { color: var(--accent); }
 .listone-table td.warn { color: var(--orange); }
 .listone-actions { display: flex; gap: 6px; }
 .listone-actions button { padding: 4px 10px; font-size: 0.78rem; }
+.listone-legend { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--muted); margin-left: auto; }
+.legend-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-left: 10px; margin-right: 2px; }
+.legend-dot.legend-me { background: rgba(79, 140, 255, 0.35); border: 1px solid var(--accent); }
+.legend-dot.legend-other { background: rgba(231, 76, 60, 0.25); border: 1px solid var(--red); }
+.listone-table tbody tr.listone-row-me { background: rgba(79, 140, 255, 0.14); }
+.listone-table tbody tr.listone-row-me:hover { background: rgba(79, 140, 255, 0.22); }
+.listone-table tbody tr.listone-row-other { background: rgba(231, 76, 60, 0.1); }
+.listone-table tbody tr.listone-row-other:hover { background: rgba(231, 76, 60, 0.16); }
+.listone-owner { font-size: 0.72rem; font-weight: 400; color: var(--muted); }
 
 .opponents-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; max-height: 60vh; overflow-y: auto; }
 .opponent-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }

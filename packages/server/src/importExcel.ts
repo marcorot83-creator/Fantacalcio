@@ -308,6 +308,7 @@ function parseStrategiaConfig(wb: XLSX.WorkBook): StrategyConfig {
       slotPlan.push({
         slotKey,
         famiglia: famLabel,
+        role: defaultEntry?.role ?? (famLabel === "Jolly" || famLabel === "Non433" ? "E" : famLabel),
         profilo: str(r?.[5]),
         targetBudget: num(r?.[6]) ?? defaultEntry?.targetBudget ?? 1,
         regola: str(r?.[7]),

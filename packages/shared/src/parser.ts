@@ -1,12 +1,17 @@
 import type { Famiglia433, Player } from "./types";
 import { fuzzyFind, normalizeName, type FuzzyMatch } from "./util";
+import { FORMATIONS, type FormationId } from "./formations";
+import { STRATEGIES, type StrategyId } from "./strategies";
+import { AUCTION_STYLES, type AuctionStyleId } from "./auctionStyle";
 
 export type ParserIntent =
   | "NOMINATE" | "BID_UPDATE" | "RILANCIA_QUERY" | "WON_BY_ME" | "SOLD_TO_OPPONENT" | "LOST_UNKNOWN"
   | "STATUS_QUERY_PLAYER" | "RECOMMEND_ROLE" | "NEED_UNDER_PRICE" | "GEMS_QUERY" | "WHO_TO_CALL"
   | "MAX_SPEND" | "WHATIF" | "ALTERNATIVES" | "PAIR_QUERY" | "BALLOTTAGGIO_QUERY" | "OPPONENTS_NEED" | "OPPONENTS_AVG_SPEND"
   | "OVERSPEND_QUERY" | "RECALC_STRATEGY" | "AUTO_ON" | "AUTO_OFF" | "STATUS" | "ROSTER" | "BUDGET"
-  | "OPPONENTS" | "UNDO" | "NEW_AUCTION" | "UNKNOWN";
+  | "OPPONENTS" | "UNDO" | "NEW_AUCTION"
+  | "QUERY_CONFIG" | "SET_FORMATION" | "SET_STRATEGY" | "SET_STYLE" | "SIMULATE_FORMATION" | "SIMULATE_STRATEGY"
+  | "UNKNOWN";
 
 export interface ManagerRef { id: string; name: string }
 
@@ -20,6 +25,39 @@ export interface ParsedCommand {
   family: Famiglia433 | null;
   count: number | null;
   needsClarification: string | null;
+  formationId: FormationId | null;
+  strategyId: StrategyId | null;
+  styleId: AuctionStyleId | null;
+}
+
+const FORMATION_IDS = Object.keys(FORMATIONS) as FormationId[];
+
+function detectFormation(text: string): FormationId | null {
+  // Formation ids are literally "3-5-2" style tokens — look for one verbatim.
+  for (const id of FORMATION_IDS) {
+    if (text.includes(id)) return id;
+  }
+  return null;
+}
+
+function detectStrategy(text: string): StrategyId | null {
+  const nt = normalizeName(text);
+  let best: { id: StrategyId; score: number } | null = null;
+  for (const s of Object.values(STRATEGIES)) {
+    const label = normalizeName(s.name);
+    if (nt.includes(label)) return s.id; // exact phrase match wins outright
+    const dist = fuzzyFind(nt, [s], (x) => x.name)[0];
+    if (dist && (!best || dist.score > best.score)) best = { id: s.id, score: dist.score };
+  }
+  return best && best.score >= 0.6 ? best.id : null;
+}
+
+function detectStyle(text: string): AuctionStyleId | null {
+  const nt = normalizeName(text);
+  if (/\baggressiv/.test(nt)) return "AGGRESSIVE";
+  if (/\bprudent/.test(nt)) return "PRUDENT";
+  if (/\bmedi[oa]\b/.test(nt)) return "MEDIUM";
+  return null;
 }
 
 const FAMILY_WORDS: Record<string, Famiglia433> = {
@@ -132,7 +170,7 @@ export function parseCommand(
   const nums = extractNumbers(raw);
   const base: ParsedCommand = {
     raw, intent: "UNKNOWN", playerId: null, playerAmbiguous: null, price: null, managerId: null,
-    family: null, count: null, needsClarification: null,
+    family: null, count: null, needsClarification: null, formationId: null, strategyId: null, styleId: null,
   };
 
   // ---- slash commands ----
@@ -176,6 +214,18 @@ export function parseCommand(
         const { playerId, ambiguous } = resolvePlayer(findPlayerMatch(restText, ctx.players, ctx.managers));
         return { ...base, intent: "WHATIF", playerId, playerAmbiguous: ambiguous, price: restNums[0] ?? null };
       }
+      case "modulo": {
+        const formationId = detectFormation(restText);
+        return formationId ? { ...base, intent: "SET_FORMATION", formationId } : { ...base, intent: "QUERY_CONFIG" };
+      }
+      case "strategia": {
+        const strategyId = detectStrategy(restText);
+        return strategyId ? { ...base, intent: "SET_STRATEGY", strategyId } : { ...base, intent: "QUERY_CONFIG" };
+      }
+      case "stile": {
+        const styleId = detectStyle(restText);
+        return styleId ? { ...base, intent: "SET_STYLE", styleId } : { ...base, intent: "QUERY_CONFIG" };
+      }
       case "undo": return { ...base, intent: "UNDO" };
       case "auto": return { ...base, intent: "AUTO_ON" };
       case "stop": return { ...base, intent: "AUTO_OFF" };
@@ -189,6 +239,31 @@ export function parseCommand(
   // ---- natural language ----
   if (/nuova asta|ricomincia da zero|resetta l.?asta|facciamo una nuova asta/.test(nt)) {
     return { ...base, intent: "NEW_AUCTION" };
+  }
+  if (/cosa cambia se (passo|passiamo|passassi)/.test(nt)) {
+    const formationId = detectFormation(raw);
+    if (formationId) return { ...base, intent: "SIMULATE_FORMATION", formationId };
+  }
+  if (/simula/.test(nt)) {
+    const formationId = detectFormation(raw);
+    if (formationId) return { ...base, intent: "SIMULATE_FORMATION", formationId };
+    const strategyId = detectStrategy(nt.replace(/senza applicarlo|applicare|senza applicare/g, ""));
+    if (strategyId) return { ...base, intent: "SIMULATE_STRATEGY", strategyId };
+  }
+  if (/che modulo|quale modulo|modulo (sto|stiamo) usando/.test(nt)) return { ...base, intent: "QUERY_CONFIG" };
+  if (/che strategia|quale strategia|strategia (sto|stiamo) usando/.test(nt)) return { ...base, intent: "QUERY_CONFIG" };
+  if (/che stile|quale stile|stile (sto|stiamo) usando/.test(nt)) return { ...base, intent: "QUERY_CONFIG" };
+  if (/cambia modulo|passa al |vai al |cambia formazione/.test(nt)) {
+    const formationId = detectFormation(raw);
+    if (formationId) return { ...base, intent: "SET_FORMATION", formationId };
+  }
+  if (/cambia strategia|metti strategia|passa a(lla)? strategia|imposta strategia/.test(nt)) {
+    const strategyId = detectStrategy(nt);
+    if (strategyId) return { ...base, intent: "SET_STRATEGY", strategyId };
+  }
+  if (/diventa|diventiamo|torniamo|metti stile|cambia stile|imposta stile|stop aggressiv/.test(nt)) {
+    const styleId = /stop aggressiv/.test(nt) ? "MEDIUM" : detectStyle(nt);
+    if (styleId) return { ...base, intent: "SET_STYLE", styleId };
   }
   if (/modalita automatica|modalit. automatica/.test(nt)) return { ...base, intent: "AUTO_ON" };
   if (/stop automatico|^stop auto$|ferma (l.)?auto/.test(nt)) return { ...base, intent: "AUTO_OFF" };

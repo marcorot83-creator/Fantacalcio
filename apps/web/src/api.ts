@@ -2,7 +2,38 @@ import type {
   AuctionSession, Player, GraduatoriaEntry, CoppiaEntry, GioielloEntry, PacchettoPortieri,
   StrategyConfig, DatasetMeta, BidRecommendation, AlternativeSuggestion, WhatIfResult,
   AuctionEventType, FeasibilityCheck as SharedFeasibilityCheck, OpponentReport, PairingInfo,
+  FormationId, StrategyId, AuctionStyleId, SlotPlanItem,
 } from "@fanta/shared";
+
+export interface SetupOptions {
+  formations: { id: FormationId; name: string }[];
+  strategies: { id: StrategyId; name: string; description: string }[];
+  styles: { id: AuctionStyleId; name: string; description: string }[];
+}
+
+export interface SetupPreview {
+  formation: { id: FormationId; name: string };
+  strategy: { id: StrategyId; name: string; description: string };
+  totalBudget: number;
+  perFamiglia: Record<string, number>;
+  priorities: { role: string; stars: number }[];
+  slotPlan: SlotPlanItem[];
+}
+
+export interface FormationSimulation {
+  from: FormationId; to: FormationId;
+  roleChanges: { role: string; before: number; after: number; direction: "up" | "down" }[];
+  coverageBefore: number; coverageAfter: number;
+  summary: string;
+}
+
+export interface DashboardConfig {
+  formation: { id: FormationId; name: string };
+  strategy: { id: StrategyId; name: string; description: string };
+  style: { id: AuctionStyleId; name: string; description: string };
+  secondaryFormationCompatibility: { formationId: FormationId; pct: number }[];
+  formationShape: { essentialRoles: string[]; flankRoles: string[] };
+}
 
 const BASE = "/api";
 
@@ -20,6 +51,10 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
 
 export interface SessionSummary { id: string; name: string; status: string; createdAt: string; updatedAt: string }
 
+export interface ListonePlayer extends Player {
+  ownership: { status: string; byMe: boolean; managerName: string | null; paidPrice: number | null } | null;
+}
+
 export const api = {
   meta: () => req<DatasetMeta>("/meta"),
   strategyConfig: () => req<StrategyConfig>("/strategy-config"),
@@ -32,6 +67,21 @@ export const api = {
   coppie: () => req<CoppiaEntry[]>("/coppie"),
   gioielli: (famiglia?: string) => req<GioielloEntry[]>(`/gioielli${famiglia ? `?famiglia=${famiglia}` : ""}`),
   portieriPacchetti: () => req<PacchettoPortieri[]>("/portieri-pacchetti"),
+
+  setupOptions: () => req<SetupOptions>("/setup/options"),
+  setupPreview: (params: { formation: FormationId; strategy: StrategyId; crediti?: number; giocatoriMovimento?: number; portieri?: number }) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]));
+    return req<SetupPreview>(`/setup/preview?${qs.toString()}`);
+  },
+  dashboardConfig: (id: string) => req<DashboardConfig>(`/sessions/${id}/dashboard-config`),
+  setStrategy: (id: string, strategyProfile: StrategyId) =>
+    req<AuctionSession>(`/sessions/${id}/settings/strategy`, { method: "POST", body: JSON.stringify({ strategyProfile }) }),
+  setStyle: (id: string, auctionStyle: AuctionStyleId) =>
+    req<AuctionSession>(`/sessions/${id}/settings/style`, { method: "POST", body: JSON.stringify({ auctionStyle }) }),
+  simulateFormation: (id: string, formation: FormationId) =>
+    req<FormationSimulation>(`/sessions/${id}/settings/formation/simulate?formation=${formation}`),
+  setFormation: (id: string, primaryFormation: FormationId) =>
+    req<AuctionSession>(`/sessions/${id}/settings/formation`, { method: "POST", body: JSON.stringify({ primaryFormation }) }),
 
   sessions: () => req<SessionSummary[]>("/sessions"),
   session: (id: string) => req<AuctionSession>(`/sessions/${id}`),
@@ -59,7 +109,7 @@ export const api = {
   nomination: (id: string) => req<any>(`/sessions/${id}/nomination`),
   listone: (id: string, params: Record<string, string | number | undefined> = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]));
-    return req<{ count: number; players: Player[] }>(`/sessions/${id}/listone?${qs.toString()}`);
+    return req<{ count: number; players: ListonePlayer[] }>(`/sessions/${id}/listone?${qs.toString()}`);
   },
   why: (id: string, playerId: string) => req<{ reasons: string[] }>(`/sessions/${id}/players/${playerId}/why`),
 

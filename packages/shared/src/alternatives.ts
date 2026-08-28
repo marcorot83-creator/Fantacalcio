@@ -1,16 +1,27 @@
 import type { AlternativeSuggestion, AuctionSession, Famiglia433, GraduatoriaEntry, Player } from "./types";
-import { findPlayer } from "./roster";
+import { getFormation } from "./formations";
+import { getStrategy } from "./strategies";
+import { computeStrategicFitScore } from "./strategicFit";
 
-/** Section 50: AlternativeScore, with the curated graduatoria rank as the dominant signal. */
+/**
+ * Section 50: AlternativeScore. The curated graduatoria rank stays the
+ * dominant signal ONLY for 4-3-3 (section 29 — the one formation with a
+ * real static signal behind it); every other formation leans on
+ * StrategicFitScore instead, since there's no curated graduatoria for it.
+ */
 export function computeAlternativeScore(params: {
   player: Player;
   graduatoriaRank: number | null; // lower is better; null if not ranked
+  strategicFitScore: number;
+  useGraduatoriaRank: boolean;
   scarcityIndex: number;
   budgetResiduo: number;
 }): number {
-  const { player, graduatoriaRank, scarcityIndex, budgetResiduo } = params;
+  const { player, graduatoriaRank, strategicFitScore, useGraduatoriaRank, scarcityIndex, budgetResiduo } = params;
   const c = player.computed;
-  const rankScore = graduatoriaRank != null ? Math.max(0, 40 - graduatoriaRank) : 10;
+  const rankScore = useGraduatoriaRank
+    ? (graduatoriaRank != null ? Math.max(0, 40 - graduatoriaRank) : 10)
+    : strategicFitScore * 0.4;
   const qualityScore = c.indiceFanta * 0.3;
   const convenienzaScore = c.indiceAffare * 0.2;
   const titolaritaScore = c.titolarita * 0.15;
@@ -40,6 +51,10 @@ export function findAlternatives(params: {
     }
   }
 
+  const formation = getFormation(session.settings.primaryFormation);
+  const strategy = getStrategy(session.settings.strategyProfile);
+  const useGraduatoriaRank = session.settings.primaryFormation === "4-3-3";
+
   const candidates = players.filter((p) => {
     if (p.id === excludePlayerId) return false;
     if (p.computed.famiglia433 !== famiglia) return false;
@@ -48,9 +63,12 @@ export function findAlternatives(params: {
   });
 
   const scored = candidates.map((player) => {
+    const strategicFitScore = computeStrategicFitScore(player, formation, strategy);
     const score = computeAlternativeScore({
       player,
       graduatoriaRank: rankByPlayerId.get(player.id) ?? null,
+      strategicFitScore,
+      useGraduatoriaRank,
       scarcityIndex,
       budgetResiduo,
     });

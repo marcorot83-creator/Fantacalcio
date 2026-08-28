@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { api } from "../api";
 import type { AuctionSession, BidRecommendation, Player } from "@fanta/shared";
+import type { DashboardConfig } from "../api";
 import IndicatorBar from "./IndicatorBar";
 import RosterPanel from "./RosterPanel";
 import AlternativesPanel from "./AlternativesPanel";
@@ -9,6 +10,7 @@ import PlayerSearch from "./PlayerSearch";
 import PlayerDetailModal from "./PlayerDetailModal";
 import Listone from "./Listone";
 import OpponentsPanel from "./OpponentsPanel";
+import SettingsPanel from "./SettingsPanel";
 import { computeSemaforoClient } from "../semaforo";
 
 export default function Live(props: { sessionId: string; onHome: () => void }) {
@@ -22,6 +24,8 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
   const [detailPlayerId, setDetailPlayerId] = useState<string | null>(null);
   const [showListone, setShowListone] = useState(false);
   const [showOpponents, setShowOpponents] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [dashboardConfig, setDashboardConfig] = useState<DashboardConfig | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [sellManagerId, setSellManagerId] = useState<string>("");
@@ -33,14 +37,19 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
     return s;
   }, [sessionId]);
 
+  const loadDashboardConfig = useCallback(() => {
+    api.dashboardConfig(sessionId).then(setDashboardConfig);
+  }, [sessionId]);
+
   useEffect(() => {
     loadSession();
+    loadDashboardConfig();
     api.players({ limit: 1000 }).then((list) => {
       const map: Record<string, Player> = {};
       for (const p of list) map[p.id] = p;
       setPlayersById(map);
     });
-  }, [loadSession]);
+  }, [loadSession, loadDashboardConfig]);
 
   const activePlayer = activePlayerId ? playersById[activePlayerId] : null;
 
@@ -179,6 +188,11 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
         <div className="session-name">{session.name}</div>
         {session.status === "ARCHIVED" && <span className="badge archived">SOLA LETTURA (archiviata)</span>}
         {session.status === "COMPLETED" && <span className="badge archived">ASTA CHIUSA</span>}
+        {dashboardConfig && (
+          <button className="badge" onClick={() => setShowSettings(true)} title="Configurazione asta">
+            {dashboardConfig.formation.name} · {dashboardConfig.strategy.name} · {dashboardConfig.style.name}
+          </button>
+        )}
         <div className="spacer" />
         <button onClick={() => { setShowOpponents(false); setShowListone(true); }}>Listone</button>
         <button onClick={() => { setShowListone(false); setShowOpponents(true); }}>Avversari</button>
@@ -189,7 +203,7 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
         <button className="danger" onClick={handleDeleteAuction}>{confirmDelete ? "Confermi eliminazione?" : "Elimina asta"}</button>
       </div>
 
-      <IndicatorBar session={session} />
+      <IndicatorBar session={session} formationShape={dashboardConfig?.formationShape ?? null} />
 
       <div className="live-main">
         <div className="col">
@@ -222,11 +236,25 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
               </div>
 
               <div className="metrics">
-                <div className="metric"><div className="label">Target</div><div className="value">{activePlayer.computed.prezzoObiettivo}</div></div>
-                <div className="metric"><div className="label">Cap file</div><div className="value">{activePlayer.computed.offertaMaxBase}</div></div>
-                <div className="metric"><div className="label">Red line dinamica</div><div className="value">{recommendation?.dynamicMax ?? "…"}</div></div>
+                <div className="metric"><div className="label">Target</div><div className="value">{recommendation?.prezzoObiettivo ?? activePlayer.computed.prezzoObiettivo}</div></div>
+                <div className="metric"><div className="label">Base max</div><div className="value">{recommendation?.offertaMaxBase ?? activePlayer.computed.offertaMaxBase}</div></div>
+                <div className="metric"><div className="label">Dynamic max</div><div className="value">{recommendation?.dynamicMax ?? "…"}</div></div>
                 <div className="metric"><div className="label">Budget residuo</div><div className="value">{me.budgetResidual}</div></div>
               </div>
+
+              {recommendation && (
+                <div className="metrics">
+                  <div className="metric">
+                    <div className="label">Aggressive max</div>
+                    <div className="value">{recommendation.aggressiveMax}</div>
+                  </div>
+                  <div className="metric"><div className="label">Fit modulo+strategia</div><div className="value">{recommendation.strategicFitScore}/100</div></div>
+                  <div className="metric" style={{ gridColumn: "span 2" }}>
+                    <div className="label">Finanziabilità override</div>
+                    <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>{recommendation.aggressiveMaxNote ?? "—"}</div>
+                  </div>
+                </div>
+              )}
 
               <div className="bid-controls">
                 <label>Prezzo attuale</label>
@@ -288,6 +316,15 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
       )}
 
       {showOpponents && <OpponentsPanel sessionId={sessionId} onClose={() => setShowOpponents(false)} />}
+
+      {showSettings && (
+        <SettingsPanel
+          sessionId={sessionId}
+          readOnly={readOnly}
+          onClose={() => { setShowSettings(false); loadDashboardConfig(); }}
+          onSessionUpdated={(s) => setSession(s)}
+        />
+      )}
 
       {/* Rendered last so it stacks above Listone/Avversari when opened from within them. */}
       {detailPlayerId && detailPlayerId !== "__sell__" && (

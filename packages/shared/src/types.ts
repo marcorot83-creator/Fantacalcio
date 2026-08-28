@@ -1,3 +1,8 @@
+import type { MantraRole } from "./mantra";
+import type { FormationId } from "./formations";
+import type { StrategyId } from "./strategies";
+import type { AuctionStyleId } from "./auctionStyle";
+
 // ============================================================================
 // PERMANENT DATA — Player & Strategy Database (never touched by a new auction)
 // ============================================================================
@@ -159,6 +164,8 @@ export interface StrategyConfig {
 export interface SlotPlanItem {
   slotKey: string; // "Dd1", "Pc2", ...
   famiglia: Famiglia433;
+  /** Fine-grained Mantra role this slot actually needs (section 2/30) — the authoritative field for eligibility matching. */
+  role: MantraRole;
   profilo: string; // TOP / TITOLARE / SCOMMESSA / SEMITOP / LOW / BOMBER / VALUE / JOLLY...
   targetBudget: number;
   regola: string;
@@ -230,6 +237,7 @@ export interface AuctionPlayerState {
 export interface RosterSlot {
   slotKey: string;
   famiglia: Famiglia433;
+  role: MantraRole;
   profilo: string;
   targetBudgetInitial: number;
   targetBudgetDynamic: number;
@@ -278,7 +286,8 @@ export interface ScarcityInfo {
 export type AuctionEventType =
   | "PLAYER_NOMINATED" | "BID_UPDATED" | "PLAYER_WON_BY_ME" | "PLAYER_SOLD_TO_OPPONENT"
   | "PLAYER_UNSOLD" | "PLAYER_PASSED" | "MANUAL_CORRECTION" | "UNDO"
-  | "SESSION_CREATED" | "SESSION_RESET";
+  | "SESSION_CREATED" | "SESSION_RESET"
+  | "STRATEGY_CHANGED" | "STYLE_CHANGED" | "FORMATION_CHANGED";
 
 export interface AuctionEvent {
   id: string;
@@ -296,10 +305,14 @@ export interface AuctionEvent {
 export interface AuctionSettings {
   partecipanti: number;
   crediti: number;
-  modulo: "4-3-3";
   giocatoriMovimento: number;
   portieri: number;
-  strategia: "BOMBER_GIOIELLI";
+  /** Section 1: the tactical formation the roster is primarily built around. */
+  primaryFormation: FormationId;
+  /** Section 7: where capital concentrates. */
+  strategyProfile: StrategyId;
+  /** Section 9: how aggressively DynamicMax is pushed. */
+  auctionStyle: AuctionStyleId;
 }
 
 export interface AuctionSession {
@@ -318,6 +331,8 @@ export interface AuctionSession {
   eventLog: AuctionEvent[];
   nominationHistory: string[]; // playerIds already nominated, in order
   hiddenGems: string[]; // gem playerIds deliberately not yet nominated
+  /** Section 5: live-computed compatibility of the roster-so-far with other formations. */
+  secondaryFormationCompatibility: { formationId: FormationId; pct: number }[];
 }
 
 // ============================================================================
@@ -334,6 +349,10 @@ export interface BidRecommendation {
   prezzoObiettivo: number;
   offertaMaxBase: number;
   dynamicMax: number;
+  /** Section 19/20: explicit, financed-only override ceiling above dynamicMax. */
+  aggressiveMax: number;
+  aggressiveMaxNote: string | null;
+  strategicFitScore: number;
   budgetResiduo: number;
   slot: string | null;
   scarcity: ScarcityInfo | null;

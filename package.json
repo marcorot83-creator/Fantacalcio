@@ -14,7 +14,8 @@
     "dev:web": "npm run dev -w apps/web",
     "build:web": "npm run build -w apps/web",
     "build": "npm run build:shared && npm run build:web && npm run build:server",
-    "start": "node packages/server/dist/index.js"
+    "start": "node packages/server/dist/index.js",
+    "test": "npm run build:shared && npm run test -w packages/server"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

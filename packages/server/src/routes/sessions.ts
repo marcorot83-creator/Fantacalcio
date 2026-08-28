@@ -1,11 +1,14 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import type { AuctionEventType, AuctionSession, PlayerDatabase, Player } from "@fanta/shared";
+import type { AuctionEventType, AuctionSession, PlayerDatabase, Player, FormationId, StrategyId, AuctionStyleId } from "@fanta/shared";
 import {
   createNewAuctionSession, resetSessionInPlace, applyAuctionEvent, computeBidRecommendation,
   findAlternatives, simulateWhatIf, suggestNomination, buildAllOpponentReports, buildOpponentReport,
   runFeasibilityChecks, buildStatusSummary, renderStatusText, explainWhyForMyRoster, parseCommand,
-  getMyManager, computeDynamicMax, netSurplus, slotsStillToBuy, findOpenSlotForFamily, fuzzyFind,
-  describePlayerOwnership, findPairingInfo, describePairing,
+  getMyManager, computeDynamicMax, computeAggressiveMax, slotsStillToBuy, findOpenSlotForRoles, fuzzyFind,
+  describePlayerOwnership, findPairingInfo, describePairing, migrateSession, eligibleMantraRoles,
+  changeStrategyProfile, changeAuctionStyle, applyFormationChange, buildTargetRosterStructure,
+  getFormation, getStrategy, getAuctionStyle, FORMATIONS, STRATEGIES, AUCTION_STYLES,
+  computeStrategicFitScore, computeRoleImportance, computeFormationCoverage,
 } from "@fanta/shared";
 import { store } from "../persistence";
 
@@ -27,7 +30,10 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       err.status = 404;
       throw err;
     }
-    return session;
+    // Section 28: transparently upgrade sessions saved before formation/
+    // strategy/style existed. Not persisted here — only once something else
+    // actually saves the session (avoids silently rewriting untouched data).
+    return migrateSession(session, getDb());
   }
 
   router.get("/sessions", asyncHandler(async (_req, res) => {
@@ -44,6 +50,44 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     const session = createNewAuctionSession(getDb(), { name, settings, managerNames, myManagerIndex });
     await store.saveSession(session);
     res.status(201).json(session);
+  }));
+
+  // --------------------- Setup metadata (section 16) ---------------------
+  router.get("/setup/options", asyncHandler(async (_req, res) => {
+    res.json({
+      formations: Object.values(FORMATIONS).map((f) => ({ id: f.id, name: f.name })),
+      strategies: Object.values(STRATEGIES).map((s) => ({ id: s.id, name: s.name, description: s.description })),
+      styles: Object.values(AUCTION_STYLES).map((s) => ({ id: s.id, name: s.name, description: s.description })),
+    });
+  }));
+
+  // Section 17: preview before "INIZIA ASTA" — no session needed yet.
+  router.get("/setup/preview", asyncHandler(async (req, res) => {
+    const db = getDb();
+    const { formation, strategy, crediti, giocatoriMovimento, portieri } = req.query as Record<string, string | undefined>;
+    const formationDef = getFormation((formation as FormationId) ?? "4-3-3");
+    const strategyDef = getStrategy((strategy as StrategyId) ?? "BOMBER_GEMS");
+    const settings = {
+      crediti: crediti ? Number(crediti) : 500,
+      giocatoriMovimento: giocatoriMovimento ? Number(giocatoriMovimento) : 25,
+      portieri: portieri ? Number(portieri) : 3,
+    };
+    const plan = buildTargetRosterStructure(formationDef, strategyDef, settings);
+    const perFamiglia: Record<string, number> = {};
+    for (const slot of plan) perFamiglia[slot.famiglia] = (perFamiglia[slot.famiglia] ?? 0) + slot.targetBudget;
+    const importance = computeRoleImportance(formationDef, strategyDef);
+    const priorities = Object.entries(importance)
+      .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+      .slice(0, 4)
+      .map(([role, score]) => ({ role, stars: Math.max(1, Math.min(5, Math.round((score ?? 0) * 5))) }));
+    res.json({
+      formation: { id: formationDef.id, name: formationDef.name },
+      strategy: { id: strategyDef.id, name: strategyDef.name, description: strategyDef.description },
+      totalBudget: plan.reduce((s, sl) => s + sl.targetBudget, 0),
+      perFamiglia,
+      priorities,
+      slotPlan: plan,
+    });
   }));
 
   // Section 78: reset rapido — same id, wiped state.
@@ -74,6 +118,110 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
   router.delete("/sessions/:id", asyncHandler(async (req, res) => {
     await store.deleteSession(req.params.id);
     res.json({ ok: true });
+  }));
+
+  // --------------------- Section 24: live configuration changes ---------------------
+  router.post("/sessions/:id/settings/strategy", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    const { strategyProfile } = req.body ?? {};
+    if (!strategyProfile || !STRATEGIES[strategyProfile as StrategyId]) return res.status(400).json({ error: "strategyProfile non valido" });
+    const { session: next } = changeStrategyProfile(session, getDb(), strategyProfile as StrategyId);
+    await store.saveSession(next);
+    res.json(next);
+  }));
+
+  router.post("/sessions/:id/settings/style", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    const { auctionStyle } = req.body ?? {};
+    if (!auctionStyle || !AUCTION_STYLES[auctionStyle as AuctionStyleId]) return res.status(400).json({ error: "auctionStyle non valido" });
+    const { session: next } = changeAuctionStyle(session, auctionStyle as AuctionStyleId);
+    await store.saveSession(next);
+    res.json(next);
+  }));
+
+  function simulateFormationChange(session: AuctionSession, db: PlayerDatabase, targetFormationId: FormationId) {
+    const oldFormation = getFormation(session.settings.primaryFormation);
+    const newFormation = getFormation(targetFormationId);
+    const strategy = getStrategy(session.settings.strategyProfile);
+    const oldImportance = computeRoleImportance(oldFormation, strategy);
+    const newImportance = computeRoleImportance(newFormation, strategy);
+
+    const roles = new Set([...Object.keys(oldImportance), ...Object.keys(newImportance)]);
+    const roleChanges = [...roles].map((role) => {
+      const before = oldImportance[role as keyof typeof oldImportance] ?? 0;
+      const after = newImportance[role as keyof typeof newImportance] ?? 0;
+      return { role, before, after, direction: after > before + 0.05 ? "up" : after < before - 0.05 ? "down" : "flat" as const };
+    }).filter((r) => r.direction !== "flat").sort((a, b) => Math.abs(b.after - b.before) - Math.abs(a.after - a.before));
+
+    const myManager = session.managers.find((m) => m.isMe)!;
+    const ownedPlayers = myManager.players
+      .map((mp) => db.players.find((p) => p.id === mp.playerId))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map((p) => ({ playerId: p.id, ruoloMantra: p.ruoloMantra }));
+    const coverageBefore = computeFormationCoverage(ownedPlayers, oldFormation);
+    const coverageAfter = computeFormationCoverage(ownedPlayers, newFormation);
+
+    const summaryLines = roleChanges.slice(0, 4).map((r) =>
+      `${r.role} ${r.direction === "up" ? "diventa più importante" : "perde priorità"}`
+    );
+    return {
+      from: oldFormation.id, to: newFormation.id, roleChanges,
+      coverageBefore, coverageAfter,
+      summary: `Passando da ${oldFormation.name} a ${newFormation.name}: ${summaryLines.join("; ") || "nessun cambiamento strutturale rilevante"}. Copertura rosa attuale: ${coverageBefore}% → ${coverageAfter}%.`,
+    };
+  }
+
+  function simulateStrategyChange(session: AuctionSession, targetStrategyId: StrategyId) {
+    const formation = getFormation(session.settings.primaryFormation);
+    const oldStrategy = getStrategy(session.settings.strategyProfile);
+    const newStrategy = getStrategy(targetStrategyId);
+    const oldImportance = computeRoleImportance(formation, oldStrategy);
+    const newImportance = computeRoleImportance(formation, newStrategy);
+    const roles = new Set([...Object.keys(oldImportance), ...Object.keys(newImportance)]);
+    const roleChanges = [...roles].map((role) => {
+      const before = oldImportance[role as keyof typeof oldImportance] ?? 0;
+      const after = newImportance[role as keyof typeof newImportance] ?? 0;
+      return { role, before, after, direction: after > before + 0.05 ? "up" : after < before - 0.05 ? "down" : "flat" as const };
+    }).filter((r) => r.direction !== "flat").sort((a, b) => Math.abs(b.after - b.before) - Math.abs(a.after - a.before));
+    const summaryLines = roleChanges.slice(0, 4).map((r) => `${r.role} ${r.direction === "up" ? "diventa priorità" : "perde priorità"}`);
+    return {
+      from: oldStrategy.id, to: newStrategy.id, roleChanges,
+      summary: `${newStrategy.name}: ${newStrategy.description} ${summaryLines.length ? `Cambierebbe: ${summaryLines.join("; ")}.` : ""}`,
+    };
+  }
+
+  // Section 24: preview before applying a formation change — never mutates.
+  router.get("/sessions/:id/settings/formation/simulate", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    const db = getDb();
+    const targetFormationId = req.query.formation as FormationId | undefined;
+    if (!targetFormationId || !FORMATIONS[targetFormationId]) return res.status(400).json({ error: "formation non valido" });
+    res.json(simulateFormationChange(session, db, targetFormationId));
+  }));
+
+  router.post("/sessions/:id/settings/formation", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    const { primaryFormation } = req.body ?? {};
+    if (!primaryFormation || !FORMATIONS[primaryFormation as FormationId]) return res.status(400).json({ error: "primaryFormation non valido" });
+    const { session: next } = applyFormationChange(session, getDb(), primaryFormation as FormationId);
+    await store.saveSession(next);
+    res.json(next);
+  }));
+
+  router.get("/sessions/:id/dashboard-config", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    const formation = getFormation(session.settings.primaryFormation);
+    const strategy = getStrategy(session.settings.strategyProfile);
+    const style = getAuctionStyle(session.settings.auctionStyle);
+    const essentialRoles = [...new Set(formation.startingEleven.filter((r) => r.essential).map((r) => r.role))];
+    const flankRoles = [...new Set(formation.flankRoles)];
+    res.json({
+      formation: { id: formation.id, name: formation.name },
+      strategy: { id: strategy.id, name: strategy.name, description: strategy.description },
+      style: { id: style.id, name: style.name, description: style.description },
+      secondaryFormationCompatibility: session.secondaryFormationCompatibility,
+      formationShape: { essentialRoles, flankRoles },
+    });
   }));
 
   router.get("/sessions/:id/status", asyncHandler(async (req, res) => {
@@ -114,12 +262,15 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
   router.get("/sessions/:id/listone", asyncHandler(async (req, res) => {
     const session = await requireSession(req.params.id);
     const db = getDb();
-    const { famiglia, q, sortBy = "indiceFanta", order = "desc", limit } = req.query as Record<string, string | undefined>;
+    const { famiglia, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable } = req.query as Record<string, string | undefined>;
 
-    let players = db.players.filter((p) => {
-      const st = session.playerStates[p.id];
-      return !st || !TAKEN_STATUSES.has(st.status);
-    });
+    let players = db.players;
+    if (onlyAvailable === "true") {
+      players = players.filter((p) => {
+        const st = session.playerStates[p.id];
+        return !st || !TAKEN_STATUSES.has(st.status);
+      });
+    }
     if (famiglia) players = players.filter((p) => p.computed.famiglia433 === famiglia);
     if (q) {
       players = fuzzyFind(q, players, (p) => p.nome).filter((m) => m.score >= 0.4).map((m) => m.item);
@@ -129,10 +280,22 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     const dir = order === "asc" ? 1 : -1;
     players = [...players].sort((a, b) => (accessor(a) - accessor(b)) * dir);
 
-    res.json({
-      count: players.length,
-      players: players.slice(0, limit ? Number(limit) : 200),
+    const withOwnership = players.slice(0, limit ? Number(limit) : 200).map((p) => {
+      const st = session.playerStates[p.id];
+      if (!st || !TAKEN_STATUSES.has(st.status)) return { ...p, ownership: null };
+      const mgr = session.managers.find((m) => m.id === st.ownerManagerId);
+      return {
+        ...p,
+        ownership: {
+          status: st.status,
+          byMe: mgr?.isMe ?? false,
+          managerName: mgr?.name ?? null,
+          paidPrice: st.paidPrice,
+        },
+      };
     });
+
+    res.json({ count: players.length, players: withOwnership });
   }));
 
   // --------------------- Events (section 25) ---------------------
@@ -259,6 +422,36 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       }
     }
 
+    // ---- Section 24/27: modulo/strategia/stile via chat ----
+    if (parsed.intent === "SET_STRATEGY" && parsed.strategyId) {
+      const { session: next } = changeStrategyProfile(session, db, parsed.strategyId);
+      await store.saveSession(next);
+      return res.json({ parsed, session: next, reply: `Strategia aggiornata a ${getStrategy(parsed.strategyId).name}. Budget e priorità dei ruoli ricalcolati.` });
+    }
+    if (parsed.intent === "SET_STYLE" && parsed.styleId) {
+      const { session: next } = changeAuctionStyle(session, parsed.styleId);
+      await store.saveSession(next);
+      return res.json({ parsed, session: next, reply: `Stile aggiornato a ${getAuctionStyle(parsed.styleId).name}. Il DynamicMax si ricalcola dalla prossima chiamata.` });
+    }
+    if (parsed.intent === "SET_FORMATION" && parsed.formationId) {
+      const preview = simulateFormationChange(session, db, parsed.formationId);
+      return res.json({ parsed, formationSimulation: preview, pendingFormationChange: parsed.formationId, reply: `${preview.summary}\nVuoi applicare il cambio?` });
+    }
+    if (parsed.intent === "SIMULATE_FORMATION" && parsed.formationId) {
+      const preview = simulateFormationChange(session, db, parsed.formationId);
+      return res.json({ parsed, formationSimulation: preview, reply: preview.summary });
+    }
+    if (parsed.intent === "SIMULATE_STRATEGY" && parsed.strategyId) {
+      const preview = simulateStrategyChange(session, parsed.strategyId);
+      return res.json({ parsed, strategySimulation: preview, reply: preview.summary });
+    }
+    if (parsed.intent === "QUERY_CONFIG") {
+      const formation = getFormation(session.settings.primaryFormation);
+      const strategy = getStrategy(session.settings.strategyProfile);
+      const style = getAuctionStyle(session.settings.auctionStyle);
+      return res.json({ parsed, reply: `Modulo: ${formation.name} · Strategia: ${strategy.name} · Stile: ${style.name}` });
+    }
+
     res.json(buildChatResponse(parsed, session, db));
   }));
 
@@ -319,12 +512,14 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       case "MAX_SPEND": {
         if (!player) return { parsed, reply: "Quale giocatore?" };
         const myManager = getMyManager(session);
-        const slot = findOpenSlotForFamily(session.rosterSlots, player.computed.famiglia433);
-        const { dynamicMax } = computeDynamicMax({
-          offertaMaxBase: player.computed.offertaMaxBase, manager: myManager,
-          slotsStillToBuy: slotsStillToBuy(myManager, session.rosterSlots) - (slot ? 1 : 0), slot, netSurplus: netSurplus(session),
+        const slot = findOpenSlotForRoles(session.rosterSlots, eligibleMantraRoles(player.ruoloMantra));
+        const dmx = computeDynamicMax({
+          player, session, manager: myManager,
+          slotsStillToBuy: slotsStillToBuy(myManager, session.rosterSlots) - (slot ? 1 : 0), slot,
         });
-        return { parsed, reply: `Puoi arrivare fino a ${dynamicMax} per ${player.nome} (target ${player.computed.prezzoObiettivo}, cap file ${player.computed.offertaMaxBase}, budget residuo ${myManager.budgetResidual}).`, dynamicMax };
+        const aggressive = computeAggressiveMax({ session, dynamicMax: dmx.dynamicMax, slot });
+        const extraNote = aggressive.financeable && aggressive.extra > 0 ? ` Con un override ${getAuctionStyle(session.settings.auctionStyle).name.toLowerCase()} potresti arrivare a ${aggressive.aggressiveMax} (${aggressive.note})` : "";
+        return { parsed, reply: `Puoi arrivare fino a ${dmx.dynamicMax} per ${player.nome} (target ${player.computed.prezzoObiettivo}, cap file ${player.computed.offertaMaxBase}, budget residuo ${myManager.budgetResidual}).${extraNote}`, dynamicMax: dmx.dynamicMax };
       }
       case "ALTERNATIVES": {
         if (!player) return { parsed, reply: "Alternative a chi?" };

@@ -1,5 +1,9 @@
 import type { AuctionSession, ManagerState, Player, ReallocationEvent, RosterSlot } from "./types";
 import { uid, nowIso } from "./util";
+import { getFormation } from "./formations";
+import { getStrategy } from "./strategies";
+import { getAuctionStyle } from "./auctionStyle";
+import { computeFormationFit, computeStrategyFit } from "./strategicFit";
 
 export function getManager(session: AuctionSession, managerId: string): ManagerState {
   const m = session.managers.find((mm) => mm.id === managerId);
@@ -22,6 +26,8 @@ export function maxBidCapacity(manager: ManagerState): number {
  * against `targetBudgetDynamic`, spread the overspend (or reinvest the saving)
  * across still-open slots, protecting the highest-priority slots first.
  * Mutates nothing — returns the new slots array + a transparent log entry.
+ * Safe to call speculatively (section 20/43): callers that don't want to
+ * persist the result just discard the returned slots.
  */
 export function reallocateBudget(
   rosterSlots: RosterSlot[],
@@ -100,27 +106,6 @@ export function reallocateBudget(
   return { slots, event };
 }
 
-/**
- * Section 19: DynamicMax = min(OffertaMaxBase, LimiteAssolutoDiBudget, LimiteStrategicoDiRosa)
- */
-export function computeDynamicMax(params: {
-  offertaMaxBase: number;
-  manager: ManagerState;
-  slotsStillToBuy: number; // count of open roster slots excluding the one being bid on
-  slot: RosterSlot | undefined;
-  netSurplus: number; // savingTotal - overspendTotal accumulated so far
-}): { dynamicMax: number; limiteAssolutoDiBudget: number; limiteStrategicoDiRosa: number } {
-  const { offertaMaxBase, manager, slotsStillToBuy, slot, netSurplus } = params;
-  const limiteAssolutoDiBudget = manager.budgetResidual - Math.max(0, slotsStillToBuy) * 1;
-  const slotTarget = slot?.targetBudgetDynamic ?? offertaMaxBase;
-  // Strategic buffer: how much of the accumulated net surplus can reasonably be
-  // thrown at this one slot without endangering the rest of the plan.
-  const strategicBuffer = Math.max(0, netSurplus) * 0.5;
-  const limiteStrategicoDiRosa = Math.round(slotTarget + strategicBuffer + (offertaMaxBase - slotTarget) * 0.6);
-  const dynamicMax = Math.max(1, Math.min(offertaMaxBase, limiteAssolutoDiBudget, limiteStrategicoDiRosa));
-  return { dynamicMax, limiteAssolutoDiBudget, limiteStrategicoDiRosa };
-}
-
 export function netSurplus(session: AuctionSession): number {
   return session.strategyState.savingTotal - session.strategyState.overspendTotal;
 }
@@ -128,4 +113,121 @@ export function netSurplus(session: AuctionSession): number {
 export function slotsStillToBuy(manager: ManagerState, rosterSlots: RosterSlot[]): number {
   if (manager.isMe) return rosterSlots.filter((s) => s.playerId == null).length;
   return Math.max(0, manager.slotsTotal - manager.slotsFilled);
+}
+
+export interface DynamicMaxFactors {
+  basePlayerMax: number;
+  formationFit: number; // multiplier
+  strategyImportance: number; // multiplier
+  marketAdjustment: number; // multiplier
+  scarcityAdjustment: number; // multiplier
+  auctionStyleAdjustment: number; // multiplier
+  rosterNeedAdjustment: number; // multiplier
+  beforeCaps: number;
+  budgetFeasibilityCap: number;
+  rosterCompletionCap: number;
+  dynamicMax: number;
+}
+
+/**
+ * Section 13: DynamicMax = BasePlayerMax × FormationFit × StrategyImportance
+ * × MarketAdjustment × ScarcityAdjustment × AuctionStyleAdjustment ×
+ * RosterNeedAdjustment, then hard-capped by budget feasibility and roster
+ * completion (section 12: these never bend regardless of style).
+ */
+export function computeDynamicMax(params: {
+  player: Player;
+  session: AuctionSession;
+  manager: ManagerState;
+  slotsStillToBuy: number; // count of open roster slots excluding the one being bid on
+  slot: RosterSlot | undefined;
+}): DynamicMaxFactors {
+  const { player, session, manager, slotsStillToBuy: slotsLeft, slot } = params;
+  const formation = getFormation(session.settings.primaryFormation);
+  const strategy = getStrategy(session.settings.strategyProfile);
+  const style = getAuctionStyle(session.settings.auctionStyle);
+
+  const basePlayerMax = player.computed.offertaMaxBase;
+
+  const formationFitScore = computeFormationFit(player, formation);
+  const formationFit = 0.8 + (formationFitScore / 100) * 0.4; // 0.8 - 1.2
+
+  const strategyFitScore = computeStrategyFit(player, formation, strategy);
+  const strategyImportance = 0.8 + (strategyFitScore / 100) * 0.4; // 0.8 - 1.2
+
+  const marketStats = session.marketState.perFamiglia[player.computed.famiglia433];
+  const marketAdjustment = marketStats ? Math.min(1.25, Math.max(0.85, marketStats.adjustedMarketIndex)) : 1.0;
+
+  const scarcityInfo = session.marketState.scarcity[player.computed.famiglia433];
+  const scarcityAdjustment =
+    scarcityInfo?.level === "critica" ? 1.1 :
+    scarcityInfo?.level === "alta" ? 1.05 :
+    scarcityInfo?.level === "bassa" ? 0.95 : 1.0;
+
+  const auctionStyleAdjustment = style.dynamicCapMultiplier;
+
+  const rosterNeedAdjustment = !slot ? 0.85 : slot.protectPriority <= 6 ? 1.08 : 1.0;
+
+  const beforeCaps = Math.round(
+    basePlayerMax * formationFit * strategyImportance * marketAdjustment * scarcityAdjustment * auctionStyleAdjustment * rosterNeedAdjustment
+  );
+
+  // Hard caps (section 12) — never bend regardless of style.
+  const budgetFeasibilityCap = manager.budgetResidual - Math.max(0, slotsLeft) * 1;
+  const otherOpenSlots = session.rosterSlots.filter((s) => s.playerId == null && s.slotKey !== slot?.slotKey);
+  const essentialReserve = otherOpenSlots.reduce((sum, s) => sum + Math.max(1, Math.round(s.targetBudgetDynamic * 0.12)), 0);
+  const rosterCompletionCap = manager.budgetResidual - essentialReserve;
+
+  // Sanity ceiling well above the two spec-mandated hard caps: stops a
+  // pathological all-factors-at-once alignment from running away, without
+  // masking the (legitimate, and much smaller) swing the style multiplier
+  // alone is supposed to contribute.
+  const sanityCeiling = basePlayerMax * 1.6;
+  const dynamicMax = Math.max(1, Math.min(beforeCaps, budgetFeasibilityCap, rosterCompletionCap, sanityCeiling));
+
+  return {
+    basePlayerMax, formationFit, strategyImportance, marketAdjustment, scarcityAdjustment,
+    auctionStyleAdjustment, rosterNeedAdjustment, beforeCaps, budgetFeasibilityCap, rosterCompletionCap, dynamicMax,
+  };
+}
+
+export interface AggressiveMaxResult {
+  aggressiveMax: number;
+  extra: number; // aggressiveMax - dynamicMax
+  financeable: boolean;
+  cuts: { slotKey: string; delta: number }[];
+  note: string;
+}
+
+/**
+ * Section 11/19/20: the explicit, transparent override headroom above
+ * DynamicMax that AGGRESSIVE (and, to a lesser extent, MEDIO) styles allow —
+ * only surfaced together with how it would actually be financed. Never
+ * silently folded into DynamicMax itself.
+ */
+export function computeAggressiveMax(params: {
+  session: AuctionSession;
+  dynamicMax: number;
+  slot: RosterSlot | undefined;
+}): AggressiveMaxResult {
+  const { session, dynamicMax, slot } = params;
+  const style = getAuctionStyle(session.settings.auctionStyle);
+  const extraPct = style.strategicOverridePct;
+  if (extraPct <= 0 || !slot) {
+    return { aggressiveMax: dynamicMax, extra: 0, financeable: false, cuts: [], note: "" };
+  }
+  const aggressiveMax = Math.round(dynamicMax * (1 + extraPct));
+  const extra = aggressiveMax - dynamicMax;
+  const { slots: afterCuts, event } = reallocateBudget(session.rosterSlots, slot.slotKey, "__hypothetical__", aggressiveMax);
+  void afterCuts;
+  const financeable = event.cuts.length > 0 || extra <= 0;
+  return {
+    aggressiveMax,
+    extra,
+    financeable,
+    cuts: event.cuts,
+    note: financeable
+      ? `Gli ultimi ${extra} crediti richiedono: ${event.cuts.map((c) => `${c.slotKey} (${c.delta})`).join(", ")}.`
+      : `Override non autorizzato: nessun taglio realistico identificabile per finanziare ${extra} crediti extra.`,
+  };
 }

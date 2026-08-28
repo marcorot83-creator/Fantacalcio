@@ -1,5 +1,9 @@
 import type { AuctionSession, Famiglia433, GraduatoriaEntry, Player, RosterSlot } from "./types";
+import { eligibleMantraRoles } from "./mantra";
 import { getMyManager } from "./budget";
+import { getFormation } from "./formations";
+import { getStrategy } from "./strategies";
+import { computeStrategicFitScore } from "./strategicFit";
 
 export type NominationCategory = "ATTACK" | "DRAIN" | "INFORMATION" | "HIDE";
 
@@ -52,14 +56,21 @@ export function suggestNomination(params: {
   const keepHidden = spentRatio < 0.55 ? gems.slice(0, 3).map((p) => ({ playerId: p.id, nome: p.nome })) : [];
   const hiddenIds = new Set(keepHidden.map((g) => g.playerId));
 
+  const formation = getFormation(session.settings.primaryFormation);
+  const strategy = getStrategy(session.settings.strategyProfile);
+  const useGraduatoriaRank = session.settings.primaryFormation === "4-3-3";
+
   // 1) ATTACK: my top open slot, best-ranked non-gem candidate still available.
   for (const slot of openSlots.slice(0, 3)) {
     const candidates = available
-      .filter((p) => p.computed.famiglia433 === slot.famiglia && !hiddenIds.has(p.id))
+      .filter((p) => !hiddenIds.has(p.id) && eligibleMantraRoles(p.ruoloMantra).includes(slot.role))
       .sort((a, b) => {
-        const ra = rankByPlayerId.get(a.id)?.rank ?? 999;
-        const rb = rankByPlayerId.get(b.id)?.rank ?? 999;
-        return ra - rb;
+        if (useGraduatoriaRank) {
+          const ra = rankByPlayerId.get(a.id)?.rank ?? 999;
+          const rb = rankByPlayerId.get(b.id)?.rank ?? 999;
+          if (ra !== rb) return ra - rb;
+        }
+        return computeStrategicFitScore(b, formation, strategy) - computeStrategicFitScore(a, formation, strategy);
       });
     const best = candidates[0];
     if (best && best.computed.offertaMaxBase <= myManager.budgetResidual) {

@@ -1,6 +1,6 @@
 import type {
   AuctionEvent, AuctionEventType, AuctionPlayerState, AuctionSession, AuctionSettings, ManagerState,
-  Player, PlayerDatabase, RosterSlot,
+  Player, PlayerDatabase, RosterSlot, SlotPlanItem,
 } from "./types";
 import { uid, nowIso } from "./util";
 import { assignPlayersToSlots, findPlayer } from "./roster";
@@ -8,6 +8,12 @@ import { reallocateBudget } from "./budget";
 import { computeMarketState } from "./market";
 import { inferOpponentStyle } from "./opponents";
 import { describePlayerOwnership } from "./status";
+import { type FormationId, getFormation } from "./formations";
+import { type StrategyId, getStrategy } from "./strategies";
+import { type AuctionStyleId, getAuctionStyle } from "./auctionStyle";
+import { buildTargetRosterStructure } from "./rosterStructure";
+import { computeSecondaryFormationCompatibility } from "./compatibility";
+import { DEFAULT_SLOT_PLAN } from "./constants";
 
 function cloneWithoutEventLog(session: AuctionSession): Omit<AuctionSession, "eventLog"> {
   const { eventLog, ...rest } = session;
@@ -25,10 +31,11 @@ function defaultSettings(overrides?: Partial<AuctionSettings>): AuctionSettings 
   return {
     partecipanti: 12,
     crediti: 500,
-    modulo: "4-3-3",
     giocatoriMovimento: 25,
     portieri: 3,
-    strategia: "BOMBER_GIOIELLI",
+    primaryFormation: "4-3-3",
+    strategyProfile: "BOMBER_GEMS",
+    auctionStyle: "MEDIUM",
     ...overrides,
   };
 }
@@ -51,10 +58,28 @@ function buildManagers(settings: AuctionSettings, managerNames: string[] | undef
   }));
 }
 
-function buildRosterSlots(db: PlayerDatabase): RosterSlot[] {
-  return db.strategyConfig.slotPlan.map((sp) => ({
+/**
+ * Section 29: for the exact 4-3-3 + Bomber&Gioielli combo, prefer the
+ * numbers actually curated in the Excel's "Strategia 433" sheet over the
+ * generalized generator — that's the one combination with a real static
+ * signal behind it. Every other formation/strategy pairing is generated.
+ */
+export function resolveSlotPlan(db: PlayerDatabase, settings: AuctionSettings): SlotPlanItem[] {
+  if (settings.primaryFormation === "4-3-3" && settings.strategyProfile === "BOMBER_GEMS") {
+    const excelPlan = db.strategyConfig.slotPlan;
+    if (excelPlan && excelPlan.length > 0) return excelPlan;
+    return DEFAULT_SLOT_PLAN;
+  }
+  const formation = getFormation(settings.primaryFormation);
+  const strategy = getStrategy(settings.strategyProfile);
+  return buildTargetRosterStructure(formation, strategy, settings);
+}
+
+function buildRosterSlots(db: PlayerDatabase, settings: AuctionSettings): RosterSlot[] {
+  return resolveSlotPlan(db, settings).map((sp) => ({
     slotKey: sp.slotKey,
     famiglia: sp.famiglia,
+    role: sp.role,
     profilo: sp.profilo,
     targetBudgetInitial: sp.targetBudget,
     targetBudgetDynamic: sp.targetBudget,
@@ -101,12 +126,13 @@ export function createNewAuctionSession(db: PlayerDatabase, config: NewAuctionCo
     managers,
     myManagerId: managers[myIdx].id,
     playerStates: buildPlayerStates(db),
-    rosterSlots: buildRosterSlots(db),
+    rosterSlots: buildRosterSlots(db, settings),
     strategyState: { overspendTotal: 0, savingTotal: 0, slotAdjustments: {}, reallocationLog: [] },
     marketState: { perFamiglia: {}, scarcity: {} },
     eventLog: [],
     nominationHistory: [],
     hiddenGems: [],
+    secondaryFormationCompatibility: [],
   };
 
   const initEvent: AuctionEvent = {
@@ -136,6 +162,50 @@ export function resetSessionInPlace(db: PlayerDatabase, session: AuctionSession)
   fresh.id = session.id;
   fresh.createdAt = session.createdAt;
   return fresh;
+}
+
+/**
+ * Section 28: sessions saved before formation/strategy/style existed are
+ * loaded as 4-3-3 / Bomber&Gioielli / Medio (section 28, Test 8) — applied
+ * once wherever a session is read (server-side, in requireSession), never
+ * silently rewriting a session that hasn't been touched otherwise.
+ */
+export function migrateSession(session: AuctionSession, db: PlayerDatabase): AuctionSession {
+  const needsSettings = !session.settings.primaryFormation || !session.settings.strategyProfile || !session.settings.auctionStyle;
+  const needsSlotRoles = session.rosterSlots.length > 0 && session.rosterSlots.some((s) => !s.role);
+  const needsCompat = !session.secondaryFormationCompatibility;
+  if (!needsSettings && !needsSlotRoles && !needsCompat) return session;
+
+  const s: AuctionSession = structuredClone(session);
+  s.settings = {
+    ...s.settings,
+    primaryFormation: s.settings.primaryFormation ?? "4-3-3",
+    strategyProfile: s.settings.strategyProfile ?? "BOMBER_GEMS",
+    auctionStyle: s.settings.auctionStyle ?? "MEDIUM",
+  };
+
+  if (needsSlotRoles) {
+    const freshSlots = buildRosterSlots(db, s.settings);
+    const freshBySlotKey = new Map(freshSlots.map((sl) => [sl.slotKey, sl]));
+    // Preserve dynamic budgets already accumulated where the slotKey still exists.
+    s.rosterSlots = freshSlots.map((sl) => {
+      const old = s.rosterSlots.find((o) => o.slotKey === sl.slotKey);
+      return old ? { ...sl, targetBudgetDynamic: old.targetBudgetDynamic } : sl;
+    });
+    for (const mgr of s.managers) {
+      if (!mgr.isMe) continue;
+      const eligible = mgr.players
+        .map((mp) => findPlayer(db.players, mp.playerId))
+        .filter((p): p is Player => !!p)
+        .map((p) => ({ playerId: p.id, ruoloMantra: p.ruoloMantra }));
+      const mapping = assignPlayersToSlots(eligible, s.rosterSlots);
+      for (const slot of s.rosterSlots) slot.playerId = mapping[slot.slotKey] ?? null;
+    }
+    void freshBySlotKey;
+  }
+
+  s.secondaryFormationCompatibility = s.secondaryFormationCompatibility ?? [];
+  return s;
 }
 
 export interface ApplyEventInput {
@@ -241,6 +311,7 @@ export function applyAuctionEvent(
       myManager.players.push({ playerId, paidPrice: input.price, acquiredAt: now });
       reassignMyRoster(s, db.players);
       applyBudgetReallocation(s, playerId, input.price);
+      s.secondaryFormationCompatibility = computeSecondaryFormationCompatibility(s, db);
       break;
     }
     case "PLAYER_SOLD_TO_OPPONENT": {
@@ -288,6 +359,76 @@ export function applyAuctionEvent(
     id: uid("evt_"), seq: nextSeq(s), timestamp: now, type: input.type,
     playerId, price: input.price ?? null, managerId: input.managerId ?? (input.type === "PLAYER_WON_BY_ME" ? myManager.id : null),
     stateBefore, stateAfter: cloneWithoutEventLog(s), payload: input.payload,
+  };
+  s.eventLog = [...session.eventLog, event];
+  return { session: s, event };
+}
+
+// ============================================================================
+// Section 24: live configuration changes (strategy/style easy, formation
+// gated behind an explicit simulate-then-confirm flow).
+// ============================================================================
+
+function regenerateRosterForNewPlan(session: AuctionSession, db: PlayerDatabase, settings: AuctionSettings): RosterSlot[] {
+  const freshSlots = buildRosterSlots(db, settings);
+  const myManager = session.managers.find((m) => m.isMe)!;
+  const eligible = myManager.players
+    .map((mp) => findPlayer(db.players, mp.playerId))
+    .filter((p): p is Player => !!p)
+    .map((p) => ({ playerId: p.id, ruoloMantra: p.ruoloMantra }));
+  const mapping = assignPlayersToSlots(eligible, freshSlots);
+  for (const slot of freshSlots) slot.playerId = mapping[slot.slotKey] ?? null;
+  return freshSlots;
+}
+
+export function changeStrategyProfile(session: AuctionSession, db: PlayerDatabase, newStrategy: StrategyId): { session: AuctionSession; event: AuctionEvent } {
+  const s: AuctionSession = structuredClone(session);
+  const stateBefore = cloneWithoutEventLog(s);
+  const now = nowIso();
+  const oldStrategy = s.settings.strategyProfile;
+  s.settings = { ...s.settings, strategyProfile: newStrategy };
+  s.rosterSlots = regenerateRosterForNewPlan(s, db, s.settings);
+  s.strategyState.reallocationLog = [];
+  s.updatedAt = now;
+  const event: AuctionEvent = {
+    id: uid("evt_"), seq: nextSeq(s), timestamp: now, type: "STRATEGY_CHANGED",
+    playerId: null, price: null, managerId: null, stateBefore, stateAfter: cloneWithoutEventLog(s),
+    payload: { from: oldStrategy, to: newStrategy },
+  };
+  s.eventLog = [...session.eventLog, event];
+  return { session: s, event };
+}
+
+export function changeAuctionStyle(session: AuctionSession, newStyle: AuctionStyleId): { session: AuctionSession; event: AuctionEvent } {
+  const s: AuctionSession = structuredClone(session);
+  const stateBefore = cloneWithoutEventLog(s);
+  const now = nowIso();
+  const oldStyle = s.settings.auctionStyle;
+  s.settings = { ...s.settings, auctionStyle: newStyle };
+  s.updatedAt = now;
+  const event: AuctionEvent = {
+    id: uid("evt_"), seq: nextSeq(s), timestamp: now, type: "STYLE_CHANGED",
+    playerId: null, price: null, managerId: null, stateBefore, stateAfter: cloneWithoutEventLog(s),
+    payload: { from: oldStyle, to: newStyle },
+  };
+  s.eventLog = [...session.eventLog, event];
+  return { session: s, event };
+}
+
+export function applyFormationChange(session: AuctionSession, db: PlayerDatabase, newFormation: FormationId): { session: AuctionSession; event: AuctionEvent } {
+  const s: AuctionSession = structuredClone(session);
+  const stateBefore = cloneWithoutEventLog(s);
+  const now = nowIso();
+  const oldFormation = s.settings.primaryFormation;
+  s.settings = { ...s.settings, primaryFormation: newFormation };
+  s.rosterSlots = regenerateRosterForNewPlan(s, db, s.settings);
+  s.strategyState.reallocationLog = [];
+  s.secondaryFormationCompatibility = computeSecondaryFormationCompatibility(s, db);
+  s.updatedAt = now;
+  const event: AuctionEvent = {
+    id: uid("evt_"), seq: nextSeq(s), timestamp: now, type: "FORMATION_CHANGED",
+    playerId: null, price: null, managerId: null, stateBefore, stateAfter: cloneWithoutEventLog(s),
+    payload: { from: oldFormation, to: newFormation },
   };
   s.eventLog = [...session.eventLog, event];
   return { session: s, event };

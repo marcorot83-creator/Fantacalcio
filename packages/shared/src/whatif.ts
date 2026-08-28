@@ -1,5 +1,6 @@
 import type { AuctionSession, Player, WhatIfResult } from "./types";
-import { findOpenSlotForFamily } from "./decision";
+import { eligibleMantraRoles } from "./mantra";
+import { findOpenSlotForRoles } from "./decision";
 import { reallocateBudget, getMyManager } from "./budget";
 
 export function simulateWhatIf(params: {
@@ -10,7 +11,7 @@ export function simulateWhatIf(params: {
   const { player, hypotheticalPrice, session } = params;
   const myManager = getMyManager(session);
   const famiglia = player.computed.famiglia433;
-  const slot = findOpenSlotForFamily(session.rosterSlots, famiglia);
+  const slot = findOpenSlotForRoles(session.rosterSlots, eligibleMantraRoles(player.ruoloMantra));
 
   const newBudgetResiduo = myManager.budgetResidual - hypotheticalPrice;
   const otherOpenSlots = session.rosterSlots.filter((s) => s.playerId == null && s.slotKey !== slot?.slotKey).length;

@@ -1,0 +1,20 @@
+{
+  "name": "fantacalcio-auction-engine",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w packages/shared",
+    "build:server": "npm run build -w packages/server",
+    "import-excel": "npm run import-excel -w packages/server",
+    "dev:server": "npm run dev -w packages/server",
+    "dev:web": "npm run dev -w apps/web",
+    "build:web": "npm run build -w apps/web"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+*.log
+*.tsbuildinfo
+.DS_Store
+packages/server/data/*.sqlite*
+packages/server/seed/player-database.json
+.env
+apps/web/dist/

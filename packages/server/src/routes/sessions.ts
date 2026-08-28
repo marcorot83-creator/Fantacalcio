@@ -1,0 +1,357 @@
+import { Router } from "express";
+import type { AuctionEventType, PlayerDatabase } from "@fanta/shared";
+import {
+  createNewAuctionSession, resetSessionInPlace, applyAuctionEvent, computeBidRecommendation,
+  findAlternatives, simulateWhatIf, suggestNomination, buildAllOpponentReports, buildOpponentReport,
+  runFeasibilityChecks, buildStatusSummary, renderStatusText, explainWhyForMyRoster, parseCommand,
+  getMyManager, computeDynamicMax, netSurplus, slotsStillToBuy, findOpenSlotForFamily,
+} from "@fanta/shared";
+import { getSession, listSessions, saveSession, archiveSession, deleteSession } from "../store";
+
+export function sessionsRouter(getDb: () => PlayerDatabase): Router {
+  const router = Router();
+
+  function requireSession(id: string) {
+    const session = getSession(id);
+    if (!session) {
+      const err: any = new Error("Sessione non trovata");
+      err.status = 404;
+      throw err;
+    }
+    return session;
+  }
+
+  router.get("/sessions", (_req, res) => {
+    res.json(listSessions());
+  });
+
+  router.get("/sessions/:id", (req, res) => {
+    res.json(requireSession(req.params.id));
+  });
+
+  // Section 77: wizard -> create session.
+  router.post("/sessions", (req, res) => {
+    const { name, settings, managerNames, myManagerIndex } = req.body ?? {};
+    const session = createNewAuctionSession(getDb(), { name, settings, managerNames, myManagerIndex });
+    saveSession(session);
+    res.status(201).json(session);
+  });
+
+  // Section 78: reset rapido — same id, wiped state.
+  router.post("/sessions/:id/reset", (req, res) => {
+    const session = requireSession(req.params.id);
+    const fresh = resetSessionInPlace(getDb(), session);
+    saveSession(fresh);
+    res.json(fresh);
+  });
+
+  router.post("/sessions/:id/archive", (req, res) => {
+    archiveSession(req.params.id);
+    res.json({ ok: true });
+  });
+
+  router.delete("/sessions/:id", (req, res) => {
+    deleteSession(req.params.id);
+    res.json({ ok: true });
+  });
+
+  router.get("/sessions/:id/status", (req, res) => {
+    const session = requireSession(req.params.id);
+    const summary = buildStatusSummary(session);
+    res.json({ summary, text: renderStatusText(summary) });
+  });
+
+  router.get("/sessions/:id/feasibility", (req, res) => {
+    const session = requireSession(req.params.id);
+    res.json(runFeasibilityChecks(session, getDb().players));
+  });
+
+  router.get("/sessions/:id/opponents", (req, res) => {
+    const session = requireSession(req.params.id);
+    res.json(buildAllOpponentReports(session, getDb().players));
+  });
+
+  router.get("/sessions/:id/opponents/:managerId", (req, res) => {
+    const session = requireSession(req.params.id);
+    const mgr = session.managers.find((m) => m.id === req.params.managerId);
+    if (!mgr) return res.status(404).json({ error: "manager not found" });
+    res.json(buildOpponentReport(mgr, getDb().players));
+  });
+
+  // --------------------- Events (section 25) ---------------------
+  router.post("/sessions/:id/events", (req, res) => {
+    const session = requireSession(req.params.id);
+    const { type, playerId, price, managerId, payload } = req.body ?? {};
+    try {
+      const { session: next, event } = applyAuctionEvent(session, getDb(), {
+        type: type as AuctionEventType, playerId, price, managerId, payload,
+      });
+      saveSession(next);
+      res.status(201).json({ session: next, event });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  router.post("/sessions/:id/undo", (req, res) => {
+    const session = requireSession(req.params.id);
+    try {
+      const { session: next, event } = applyAuctionEvent(session, getDb(), { type: "UNDO" });
+      saveSession(next);
+      res.json({ session: next, event });
+    } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // --------------------- Recommendation engine (section 29/30) ---------------------
+  router.get("/sessions/:id/recommendation/:playerId", (req, res) => {
+    const session = requireSession(req.params.id);
+    const db = getDb();
+    const player = db.players.find((p) => p.id === req.params.playerId);
+    if (!player) return res.status(404).json({ error: "player not found" });
+    const currentBid = Number(req.query.currentBid ?? player.computed.prezzoObiettivo);
+    const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState });
+    res.json(rec);
+  });
+
+  router.get("/sessions/:id/alternatives/:playerId", (req, res) => {
+    const session = requireSession(req.params.id);
+    const db = getDb();
+    const player = db.players.find((p) => p.id === req.params.playerId);
+    if (!player) return res.status(404).json({ error: "player not found" });
+    const scarcity = session.marketState.scarcity[player.computed.famiglia433];
+    const myManager = getMyManager(session);
+    const alts = findAlternatives({
+      players: db.players, graduatorie: db.graduatorie, session, famiglia: player.computed.famiglia433,
+      excludePlayerId: player.id, budgetResiduo: myManager.budgetResidual, scarcityIndex: scarcity?.scarcityIndex ?? 0,
+      limit: req.query.limit ? Number(req.query.limit) : 5,
+    });
+    res.json(alts);
+  });
+
+  router.get("/sessions/:id/whatif", (req, res) => {
+    const session = requireSession(req.params.id);
+    const db = getDb();
+    const player = db.players.find((p) => p.id === req.query.playerId);
+    if (!player) return res.status(404).json({ error: "player not found" });
+    const price = Number(req.query.price ?? 0);
+    res.json(simulateWhatIf({ player, hypotheticalPrice: price, session }));
+  });
+
+  router.get("/sessions/:id/nomination", (req, res) => {
+    const session = requireSession(req.params.id);
+    const db = getDb();
+    res.json(suggestNomination({ players: db.players, graduatorie: db.graduatorie, session }));
+  });
+
+  router.get("/sessions/:id/players/:playerId/why", (req, res) => {
+    const session = requireSession(req.params.id);
+    const db = getDb();
+    const player = db.players.find((p) => p.id === req.params.playerId);
+    if (!player) return res.status(404).json({ error: "player not found" });
+    res.json({ reasons: explainWhyForMyRoster({ player, session, graduatorie: db.graduatorie }) });
+  });
+
+  // --------------------- Conversational layer (section 26/60-61) ---------------------
+  // Unambiguous "closes the loop" commands are applied immediately (no extra
+  // confirmation step), matching the direct "ACQUISTO REGISTRATO" style from
+  // sections 60/61/71 — the parser already refuses to guess when ambiguous.
+  router.post("/sessions/:id/chat", (req, res) => {
+    const session = requireSession(req.params.id);
+    const db = getDb();
+    const { text } = req.body ?? {};
+    if (!text || typeof text !== "string") return res.status(400).json({ error: "text richiesto" });
+
+    const managers = session.managers.map((m) => ({ id: m.id, name: m.name }));
+    const parsed = parseCommand(text, { players: db.players, managers });
+
+    if (!(parsed.playerAmbiguous && parsed.playerAmbiguous.length > 1)) {
+      if (parsed.intent === "WON_BY_ME" && parsed.playerId && parsed.price != null) {
+        const player = db.players.find((p) => p.id === parsed.playerId)!;
+        const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_WON_BY_ME", playerId: player.id, price: parsed.price });
+        saveSession(next);
+        return res.json({ parsed, session: next, event, reply: renderWonByMeReply(next, player, parsed.price) });
+      }
+      if (parsed.intent === "SOLD_TO_OPPONENT" && parsed.playerId && parsed.price != null && parsed.managerId) {
+        const player = db.players.find((p) => p.id === parsed.playerId)!;
+        const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_SOLD_TO_OPPONENT", playerId: player.id, price: parsed.price, managerId: parsed.managerId });
+        saveSession(next);
+        return res.json({ parsed, session: next, event, reply: renderLostReply(next, db, player, parsed.price, parsed.managerId) });
+      }
+      if (parsed.intent === "UNDO") {
+        try {
+          const { session: next, event } = applyAuctionEvent(session, db, { type: "UNDO" });
+          saveSession(next);
+          return res.json({ parsed, session: next, event, reply: "Ultimo evento annullato." });
+        } catch (e: any) {
+          return res.json({ parsed, reply: e.message });
+        }
+      }
+    }
+
+    res.json(buildChatResponse(parsed, session, db));
+  });
+
+  function renderWonByMeReply(session: ReturnType<typeof requireSession>, player: ReturnType<typeof getDb>["players"][number], price: number): string {
+    const myManager = getMyManager(session);
+    const realloc = session.strategyState.reallocationLog.at(-1);
+    const slot = session.rosterSlots.find((s) => s.playerId === player.id);
+    const lines: string[] = [];
+    if (realloc && realloc.triggerPlayerId === player.id) {
+      lines.push(realloc.extra > 0 ? `ACQUISTO REGISTRATO. +${realloc.extra} CREDITI VS TARGET.` : realloc.extra < 0 ? `ACQUISTO REGISTRATO. -${-realloc.extra} CREDITI VS TARGET (RISPARMIO).` : "ACQUISTO REGISTRATO. Esatto al target.");
+      if (realloc.cuts.length) lines.push(realloc.note);
+    } else {
+      lines.push("ACQUISTO REGISTRATO.");
+    }
+    if (slot) lines.push(`${slot.slotKey} coperto.`);
+    const nextSlot = [...session.rosterSlots].filter((s) => s.playerId == null).sort((a, b) => a.protectPriority - b.protectPriority)[0];
+    if (nextSlot) lines.push(`Prossima priorità: ${nextSlot.slotKey} (${nextSlot.profilo}).`);
+    lines.push(`Budget residuo: ${myManager.budgetResidual}.`);
+    return lines.join("\n");
+  }
+
+  function renderLostReply(session: ReturnType<typeof requireSession>, db: PlayerDatabase, player: ReturnType<typeof getDb>["players"][number], price: number, managerId: string): string {
+    const managerName = session.managers.find((m) => m.id === managerId)?.name ?? managerId;
+    const scarcity = session.marketState.scarcity[player.computed.famiglia433];
+    const myManager = getMyManager(session);
+    const alts = findAlternatives({
+      players: db.players, graduatorie: db.graduatorie, session, famiglia: player.computed.famiglia433,
+      excludePlayerId: player.id, budgetResiduo: myManager.budgetResidual, scarcityIndex: scarcity?.scarcityIndex ?? 0, limit: 3,
+    });
+    const inflation = session.marketState.perFamiglia[player.computed.famiglia433];
+    const lines = [`${player.nome} perso a ${price} (${managerName}).`];
+    lines.push(alts.length ? `Alternative ancora disponibili: ${alts.map((a) => a.nome).join(", ")}.` : "Nessuna alternativa diretta ancora libera.");
+    if (inflation) lines.push(`Inflazione ${player.computed.famiglia433}: ${inflation.adjustedMarketIndex > 1 ? "+" : ""}${Math.round((inflation.adjustedMarketIndex - 1) * 100)}%.`);
+    return lines.join("\n");
+  }
+
+  function buildChatResponse(parsed: ReturnType<typeof parseCommand>, session: ReturnType<typeof requireSession>, db: PlayerDatabase) {
+    if (parsed.playerAmbiguous && parsed.playerAmbiguous.length > 1) {
+      return {
+        parsed,
+        reply: `Non sono sicuro a chi ti riferisci. Intendevi: ${parsed.playerAmbiguous.slice(0, 5).map((m) => m.item.nome).join(", ")}?`,
+        needsClarification: true,
+      };
+    }
+    const player = parsed.playerId ? db.players.find((p) => p.id === parsed.playerId) : undefined;
+
+    switch (parsed.intent) {
+      case "NOMINATE":
+      case "BID_UPDATE":
+      case "RILANCIA_QUERY": {
+        if (!player) return { parsed, reply: "Non ho capito quale giocatore. Puoi ripetere il nome?" };
+        const currentBid = parsed.price ?? player.computed.prezzoObiettivo;
+        const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState });
+        return { parsed, recommendation: rec, reply: `${rec.headline}\n${rec.reasons.join("\n")}` };
+      }
+      case "MAX_SPEND": {
+        if (!player) return { parsed, reply: "Quale giocatore?" };
+        const myManager = getMyManager(session);
+        const slot = findOpenSlotForFamily(session.rosterSlots, player.computed.famiglia433);
+        const { dynamicMax } = computeDynamicMax({
+          offertaMaxBase: player.computed.offertaMaxBase, manager: myManager,
+          slotsStillToBuy: slotsStillToBuy(myManager, session.rosterSlots) - (slot ? 1 : 0), slot, netSurplus: netSurplus(session),
+        });
+        return { parsed, reply: `Puoi arrivare fino a ${dynamicMax} per ${player.nome} (target ${player.computed.prezzoObiettivo}, cap file ${player.computed.offertaMaxBase}, budget residuo ${myManager.budgetResidual}).`, dynamicMax };
+      }
+      case "ALTERNATIVES": {
+        if (!player) return { parsed, reply: "Alternative a chi?" };
+        const scarcity = session.marketState.scarcity[player.computed.famiglia433];
+        const myManager = getMyManager(session);
+        const alts = findAlternatives({
+          players: db.players, graduatorie: db.graduatorie, session, famiglia: player.computed.famiglia433,
+          excludePlayerId: player.id, budgetResiduo: myManager.budgetResidual, scarcityIndex: scarcity?.scarcityIndex ?? 0,
+          limit: parsed.count ?? 5,
+        });
+        return { parsed, alternatives: alts, reply: alts.map((a) => `${a.nome} (${a.squadra}) — target ${a.prezzoObiettivo}, max ${a.offertaMax}`).join("\n") };
+      }
+      case "WHATIF": {
+        if (!player || parsed.price == null) return { parsed, reply: "Chi e a quale prezzo ipotetico?" };
+        const result = simulateWhatIf({ player, hypotheticalPrice: parsed.price, session });
+        return { parsed, whatif: result, reply: result.summary + (result.risks.length ? `\n${result.risks.join("\n")}` : "") };
+      }
+      case "WON_BY_ME": {
+        if (!player || parsed.price == null) return { parsed, reply: `Prezzo pagato per ${player?.nome ?? "questo giocatore"}?` };
+        return { parsed, pendingEvent: { type: "PLAYER_WON_BY_ME", playerId: player.id, price: parsed.price }, reply: `Registro ${player.nome} preso a ${parsed.price}?` };
+      }
+      case "SOLD_TO_OPPONENT": {
+        if (!player) return { parsed, reply: "Quale giocatore è stato venduto?" };
+        if (parsed.price == null || !parsed.managerId) {
+          return { parsed, reply: `A chi e a quanto è andato ${player.nome}?` };
+        }
+        return { parsed, pendingEvent: { type: "PLAYER_SOLD_TO_OPPONENT", playerId: player.id, price: parsed.price, managerId: parsed.managerId }, reply: `Registro ${player.nome} venduto a ${session.managers.find((m) => m.id === parsed.managerId)?.name} per ${parsed.price}?` };
+      }
+      case "LOST_UNKNOWN": {
+        if (!player) return { parsed, reply: "Chi hai perso?" };
+        return { parsed, reply: `Segnato: ${player.nome} non è più disponibile per te. A chi e a quanto è andato (se lo sai)?` };
+      }
+      case "STATUS_QUERY_PLAYER": {
+        if (!player) return { parsed, reply: "Non trovo questo giocatore." };
+        const st = session.playerStates[player.id];
+        return { parsed, player, playerState: st, reply: `${player.nome} (${player.squadra}, ${player.ruoloMantra}) — stato: ${st?.status ?? "AVAILABLE"}. Target ${player.computed.prezzoObiettivo}, max ${player.computed.offertaMaxBase}.` };
+      }
+      case "RECOMMEND_ROLE":
+      case "NEED_UNDER_PRICE": {
+        const fam = parsed.family;
+        if (!fam) return { parsed, reply: "Per quale ruolo?" };
+        let list = db.graduatorie.filter((g) => g.famiglia === fam).sort((a, b) => a.rank - b.rank);
+        if (parsed.intent === "NEED_UNDER_PRICE" && parsed.price != null) {
+          list = list.filter((g) => {
+            const p = g.playerId ? db.players.find((pp) => pp.id === g.playerId) : undefined;
+            return p ? p.computed.prezzoObiettivo <= parsed.price! : false;
+          });
+        }
+        list = list.filter((g) => !g.playerId || session.playerStates[g.playerId]?.status === "AVAILABLE" || !session.playerStates[g.playerId]);
+        return { parsed, list: list.slice(0, 8), reply: list.slice(0, 8).map((g) => g.nome).join(", ") || "Nessun candidato trovato." };
+      }
+      case "GEMS_QUERY": {
+        let gems = db.gioielli;
+        if (parsed.family) gems = gems.filter((g) => g.playerId && db.players.find((p) => p.id === g.playerId)?.computed.famiglia433 === parsed.family);
+        gems = gems.filter((g) => !g.playerId || session.playerStates[g.playerId]?.status === "AVAILABLE" || !session.playerStates[g.playerId]);
+        return { parsed, gems: gems.slice(0, 10), reply: gems.slice(0, 10).map((g) => `${g.nome} (${g.squadra}) — target ${g.prezzoObiettivo}`).join("\n") || "Nessun gioiello libero al momento." };
+      }
+      case "WHO_TO_CALL": {
+        const suggestion = suggestNomination({ players: db.players, graduatorie: db.graduatorie, session });
+        return { parsed, nomination: suggestion, reply: `CHIAMA ${suggestion.nome}.\n${suggestion.reason}` };
+      }
+      case "OPPONENTS_NEED": {
+        const fam = parsed.family;
+        const reports = buildAllOpponentReports(session, db.players);
+        const needing = session.managers.filter((m) => !m.isMe).filter((m) => {
+          if (!fam) return true;
+          const slotsForFam = session.rosterSlots.filter((s) => s.famiglia === fam);
+          return true; // opponent roster slots aren't modeled per-manager; approximate via low spend on family
+        });
+        return { parsed, reply: `Dati sugli avversari disponibili in /avversari (spesa per reparto stimata).`, opponents: reports };
+      }
+      case "OPPONENTS_AVG_SPEND": {
+        const reports = buildAllOpponentReports(session, db.players);
+        const fam = parsed.family;
+        const values = reports.map((r) => (fam ? r.spesaPerFamiglia[fam] ?? 0 : r.prezzoMedio)).filter((v) => v > 0);
+        const avg = values.length ? Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10 : 0;
+        return { parsed, reply: `Spesa media avversari${fam ? ` su ${fam}` : ""}: ${avg} crediti.` };
+      }
+      case "OVERSPEND_QUERY": {
+        const summary = buildStatusSummary(session);
+        const verdict = summary.overspendTotal > summary.savingTotal + 10 ? "Sì, un po'." : "No, sei in linea col piano.";
+        return { parsed, reply: `${verdict} Overspend totale ${summary.overspendTotal}, saving ${summary.savingTotal}, netto ${summary.netSurplus}.` };
+      }
+      case "RECALC_STRATEGY": {
+        return { parsed, reply: "Strategia ricalcolata sui dati correnti: vedi budget dinamico e alternative aggiornate in dashboard." };
+      }
+      case "STATUS": {
+        const summary = buildStatusSummary(session);
+        return { parsed, summary, reply: renderStatusText(summary) };
+      }
+      case "AUTO_ON": return { parsed, reply: "Modalità automatica attivata: ti dirò RILANCIA/MOLLA senza chiedere conferma. Dì \"STOP AUTO\" per tornare al copilota." };
+      case "AUTO_OFF": return { parsed, reply: "Modalità automatica disattivata." };
+      case "UNDO": return { parsed, pendingEvent: { type: "UNDO" }, reply: "Annullo l'ultimo evento?" };
+      case "NEW_AUCTION": return { parsed, reply: "Vuoi iniziare una nuova asta? La sessione corrente verrà archiviata. Conferma dalla schermata Home." };
+      default:
+        return { parsed, reply: "Non ho capito. Prova con un nome di giocatore, un prezzo, o /stato, /rosa, /budget, /avversari, /nomina." };
+    }
+  }
+
+  return router;
+}

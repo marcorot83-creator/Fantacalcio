@@ -34,6 +34,8 @@ export default function Listone(props: {
   readOnly?: boolean;
 }) {
   const [famiglia, setFamiglia] = useState<Famiglia433 | "">(props.initialFamiglia ?? "");
+  const [squadra, setSquadra] = useState("");
+  const [teams, setTeams] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState("indiceFanta");
   const [q, setQ] = useState("");
   const [onlyAvailable, setOnlyAvailable] = useState(false);
@@ -42,12 +44,16 @@ export default function Listone(props: {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    api.teams().then(setTeams);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
     const t = setTimeout(() => {
       api
         .listone(props.sessionId, {
-          famiglia: famiglia || undefined, sortBy, order: "desc", q: q || undefined, limit: 300,
+          famiglia: famiglia || undefined, squadra: squadra || undefined, sortBy, order: "desc", q: q || undefined, limit: 300,
           onlyAvailable: onlyAvailable ? "true" : undefined,
         })
         .then((res) => {
@@ -61,7 +67,7 @@ export default function Listone(props: {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [props.sessionId, famiglia, sortBy, q, onlyAvailable]);
+  }, [props.sessionId, famiglia, squadra, sortBy, q, onlyAvailable]);
 
   return (
     <div className="modal-backdrop" onClick={props.onClose}>
@@ -85,6 +91,12 @@ export default function Listone(props: {
 
         <div className="listone-controls">
           <input placeholder="Cerca nome…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select value={squadra} onChange={(e) => setSquadra(e.target.value)}>
+            <option value="">Tutte le squadre</option>
+            {teams.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             {SORT_OPTIONS.map((s) => (
               <option key={s.key} value={s.key}>Ordina per {s.label}</option>

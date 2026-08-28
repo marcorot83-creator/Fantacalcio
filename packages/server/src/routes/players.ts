@@ -13,6 +13,11 @@ export function playersRouter(getDb: () => PlayerDatabase): Router {
     res.json(getDb().strategyConfig);
   });
 
+  router.get("/teams", (_req, res) => {
+    const teams = [...new Set(getDb().players.map((p) => p.squadra))].sort((a, b) => a.localeCompare(b));
+    res.json(teams);
+  });
+
   router.get("/players", (req, res) => {
     const db = getDb();
     const { q, famiglia, tier, maxPrice, limit } = req.query as Record<string, string | undefined>;

@@ -58,6 +58,7 @@ export interface ListonePlayer extends Player {
 export const api = {
   meta: () => req<DatasetMeta>("/meta"),
   strategyConfig: () => req<StrategyConfig>("/strategy-config"),
+  teams: () => req<string[]>("/teams"),
   players: (params: Record<string, string | number | undefined> = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]));
     return req<Player[]>(`/players?${qs.toString()}`);

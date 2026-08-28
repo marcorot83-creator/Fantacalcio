@@ -262,7 +262,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
   router.get("/sessions/:id/listone", asyncHandler(async (req, res) => {
     const session = await requireSession(req.params.id);
     const db = getDb();
-    const { famiglia, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable } = req.query as Record<string, string | undefined>;
+    const { famiglia, squadra, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable } = req.query as Record<string, string | undefined>;
 
     let players = db.players;
     if (onlyAvailable === "true") {
@@ -272,6 +272,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       });
     }
     if (famiglia) players = players.filter((p) => p.computed.famiglia433 === famiglia);
+    if (squadra) players = players.filter((p) => p.squadra === squadra);
     if (q) {
       players = fuzzyFind(q, players, (p) => p.nome).filter((m) => m.score >= 0.4).map((m) => m.item);
     }

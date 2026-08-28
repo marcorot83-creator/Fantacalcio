@@ -7,6 +7,8 @@ import AlternativesPanel from "./AlternativesPanel";
 import Chat, { type ChatMsg } from "./Chat";
 import PlayerSearch from "./PlayerSearch";
 import PlayerDetailModal from "./PlayerDetailModal";
+import Listone from "./Listone";
+import OpponentsPanel from "./OpponentsPanel";
 import { computeSemaforoClient } from "../semaforo";
 
 export default function Live(props: { sessionId: string; onHome: () => void }) {
@@ -18,6 +20,10 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
   const [recommendation, setRecommendation] = useState<BidRecommendation | null>(null);
   const [chatLog, setChatLog] = useState<ChatMsg[]>([]);
   const [detailPlayerId, setDetailPlayerId] = useState<string | null>(null);
+  const [showListone, setShowListone] = useState(false);
+  const [showOpponents, setShowOpponents] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [sellManagerId, setSellManagerId] = useState<string>("");
   const readOnly = session?.status !== "LIVE";
 
@@ -110,6 +116,25 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
     setRecommendation(null);
   }
 
+  async function handleCloseAuction() {
+    if (!confirmClose) {
+      setConfirmClose(true);
+      return;
+    }
+    const s = await api.closeSession(sessionId);
+    setSession(s);
+    setConfirmClose(false);
+  }
+
+  async function handleDeleteAuction() {
+    if (!confirmDelete) {
+      setConfirmDelete(true);
+      return;
+    }
+    await api.deleteSession(sessionId);
+    onHome();
+  }
+
   async function handleChatSend(text: string) {
     setChatLog((log) => [...log, { role: "user", text }]);
     const res = await api.chat(sessionId, text);
@@ -152,9 +177,16 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
       <div className="top-bar">
         <button onClick={onHome}>← Home</button>
         <div className="session-name">{session.name}</div>
-        {readOnly && <span className="badge archived">SOLA LETTURA (archiviata)</span>}
+        {session.status === "ARCHIVED" && <span className="badge archived">SOLA LETTURA (archiviata)</span>}
+        {session.status === "COMPLETED" && <span className="badge archived">ASTA CHIUSA</span>}
         <div className="spacer" />
+        <button onClick={() => { setShowOpponents(false); setShowListone(true); }}>Listone</button>
+        <button onClick={() => { setShowListone(false); setShowOpponents(true); }}>Avversari</button>
         <button onClick={handleUndo} disabled={readOnly}>UNDO</button>
+        {session.status === "LIVE" && (
+          <button onClick={handleCloseAuction}>{confirmClose ? "Confermi chiusura?" : "Chiudi asta"}</button>
+        )}
+        <button className="danger" onClick={handleDeleteAuction}>{confirmDelete ? "Confermi eliminazione?" : "Elimina asta"}</button>
       </div>
 
       <IndicatorBar session={session} />
@@ -242,6 +274,22 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
 
       <Chat log={chatLog} onSend={handleChatSend} onConfirmPending={confirmPendingEvent} />
 
+      {showListone && (
+        <Listone
+          sessionId={sessionId}
+          readOnly={readOnly}
+          onClose={() => setShowListone(false)}
+          onDetail={(id) => setDetailPlayerId(id)}
+          onNominate={(p) => {
+            setShowListone(false);
+            selectPlayer(p);
+          }}
+        />
+      )}
+
+      {showOpponents && <OpponentsPanel sessionId={sessionId} onClose={() => setShowOpponents(false)} />}
+
+      {/* Rendered last so it stacks above Listone/Avversari when opened from within them. */}
       {detailPlayerId && detailPlayerId !== "__sell__" && (
         <PlayerDetailModal sessionId={sessionId} playerId={detailPlayerId} onClose={() => setDetailPlayerId(null)} />
       )}

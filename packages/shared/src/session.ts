@@ -7,6 +7,7 @@ import { assignPlayersToSlots, findPlayer } from "./roster";
 import { reallocateBudget } from "./budget";
 import { computeMarketState } from "./market";
 import { inferOpponentStyle } from "./opponents";
+import { describePlayerOwnership } from "./status";
 
 function cloneWithoutEventLog(session: AuctionSession): Omit<AuctionSession, "eventLog"> {
   const { eventLog, ...rest } = session;
@@ -229,6 +230,8 @@ export function applyAuctionEvent(
     }
     case "PLAYER_WON_BY_ME": {
       if (!playerId || input.price == null || !player) throw new Error("playerId e price richiesti");
+      const ownedWonByMe = describePlayerOwnership(s, playerId);
+      if (ownedWonByMe) throw new Error(`${player.nome} è già ${ownedWonByMe}.`);
       s.playerStates[playerId] = {
         ...s.playerStates[playerId], status: "WON_BY_ME", ownerManagerId: myManager.id,
         paidPrice: input.price, currentBid: input.price,
@@ -244,6 +247,8 @@ export function applyAuctionEvent(
       if (!playerId || input.price == null || !input.managerId) throw new Error("playerId, price, managerId richiesti");
       const mgr = s.managers.find((m) => m.id === input.managerId);
       if (!mgr) throw new Error(`Manager ${input.managerId} non trovato`);
+      const ownedSold = describePlayerOwnership(s, playerId);
+      if (ownedSold) throw new Error(`${player?.nome ?? playerId} è già ${ownedSold}.`);
       s.playerStates[playerId] = {
         ...s.playerStates[playerId], status: "WON_BY_OPPONENT", ownerManagerId: mgr.id,
         paidPrice: input.price, currentBid: input.price,

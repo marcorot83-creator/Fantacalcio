@@ -1,7 +1,7 @@
 import type {
   AuctionSession, Player, GraduatoriaEntry, CoppiaEntry, GioielloEntry, PacchettoPortieri,
   StrategyConfig, DatasetMeta, BidRecommendation, AlternativeSuggestion, WhatIfResult,
-  AuctionEventType, FeasibilityCheck as SharedFeasibilityCheck,
+  AuctionEventType, FeasibilityCheck as SharedFeasibilityCheck, OpponentReport, PairingInfo,
 } from "@fanta/shared";
 
 const BASE = "/api";
@@ -38,11 +38,13 @@ export const api = {
   createSession: (payload: any) => req<AuctionSession>("/sessions", { method: "POST", body: JSON.stringify(payload) }),
   resetSession: (id: string) => req<AuctionSession>(`/sessions/${id}/reset`, { method: "POST" }),
   archiveSession: (id: string) => req<{ ok: true }>(`/sessions/${id}/archive`, { method: "POST" }),
+  closeSession: (id: string) => req<AuctionSession>(`/sessions/${id}/close`, { method: "POST" }),
   deleteSession: (id: string) => req<{ ok: true }>(`/sessions/${id}`, { method: "DELETE" }),
 
   status: (id: string) => req<{ summary: any; text: string }>(`/sessions/${id}/status`),
   feasibility: (id: string) => req<SharedFeasibilityCheck[]>(`/sessions/${id}/feasibility`),
-  opponents: (id: string) => req<any[]>(`/sessions/${id}/opponents`),
+  opponents: (id: string) => req<OpponentReport[]>(`/sessions/${id}/opponents`),
+  pairing: (playerId: string) => req<PairingInfo[]>(`/players/${encodeURIComponent(playerId)}/pairing`),
 
   event: (id: string, payload: { type: AuctionEventType; playerId?: string | null; price?: number | null; managerId?: string | null; payload?: any }) =>
     req<{ session: AuctionSession; event: any }>(`/sessions/${id}/events`, { method: "POST", body: JSON.stringify(payload) }),
@@ -55,6 +57,10 @@ export const api = {
   whatif: (id: string, playerId: string, price: number) =>
     req<WhatIfResult>(`/sessions/${id}/whatif?playerId=${playerId}&price=${price}`),
   nomination: (id: string) => req<any>(`/sessions/${id}/nomination`),
+  listone: (id: string, params: Record<string, string | number | undefined> = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]));
+    return req<{ count: number; players: Player[] }>(`/sessions/${id}/listone?${qs.toString()}`);
+  },
   why: (id: string, playerId: string) => req<{ reasons: string[] }>(`/sessions/${id}/players/${playerId}/why`),
 
   chat: (id: string, text: string) => req<any>(`/sessions/${id}/chat`, { method: "POST", body: JSON.stringify({ text }) }),

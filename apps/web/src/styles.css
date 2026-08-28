@@ -143,6 +143,36 @@ a { color: var(--accent); }
 .modal { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 24px; max-width: 560px; width: 92%; max-height: 84vh; overflow-y: auto; }
 .modal h2 { margin-top: 0; }
 .modal ul { padding-left: 18px; color: var(--muted); line-height: 1.6; }
+.modal.modal-wide { max-width: 1100px; }
+
+.listone-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 14px 0 10px; }
+.listone-tabs button { padding: 6px 12px; font-size: 0.85rem; }
+.listone-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.listone-controls input { flex: 1; min-width: 160px; }
+.listone-table-wrap { overflow-x: auto; max-height: 55vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.listone-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; white-space: nowrap; }
+.listone-table th { position: sticky; top: 0; background: var(--panel-2); text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 600; z-index: 1; }
+.listone-table td { padding: 7px 10px; border-top: 1px solid var(--border); }
+.listone-table tbody tr:hover { background: var(--panel-2); }
+.listone-table td.strong { font-weight: 600; }
+.listone-table td.muted { color: var(--muted); }
+.listone-table td.warn { color: var(--orange); }
+.listone-actions { display: flex; gap: 6px; }
+.listone-actions button { padding: 4px 10px; font-size: 0.78rem; }
+
+.opponents-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; max-height: 60vh; overflow-y: auto; }
+.opponent-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.opponent-head { display: grid; grid-template-columns: 140px 1fr auto auto; gap: 14px; align-items: center; cursor: pointer; }
+.opponent-name { font-weight: 700; }
+.opponent-budget { display: flex; flex-direction: column; gap: 4px; }
+.budget-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.budget-bar-fill { height: 100%; background: var(--accent); }
+.opponent-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.opponent-toggle { white-space: nowrap; }
+.opponent-roster { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+@media (max-width: 720px) {
+  .opponent-head { grid-template-columns: 1fr; }
+}
 
 .top-bar { display: flex; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); gap: 12px; }
 .top-bar .session-name { font-weight: 700; }

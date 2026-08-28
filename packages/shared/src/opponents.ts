@@ -5,6 +5,7 @@ import { maxBidCapacity } from "./budget";
 export interface OpponentReport {
   managerId: string;
   name: string;
+  budgetInitial: number;
   budgetResidual: number;
   slotsFilled: number;
   slotsTotal: number;
@@ -13,6 +14,16 @@ export interface OpponentReport {
   prezzoMedio: number;
   acquistiPremium: string[];
   style: OpponentStyleGuess[];
+  /** Full roster built so far, for the "cosa si stanno facendo gli avversari" view. */
+  players: {
+    playerId: string;
+    nome: string;
+    squadra: string;
+    ruoloMantra: string;
+    famiglia: Famiglia433;
+    paidPrice: number;
+    acquiredAt: string;
+  }[];
 }
 
 /** Section 41: probabilistic behavioural inference — never presented as certainty. */
@@ -59,9 +70,27 @@ export function buildOpponentReport(manager: ManagerState, players: Player[]): O
     .filter((mp) => mp.paidPrice >= 30)
     .map((mp) => findPlayer(players, mp.playerId)?.nome ?? mp.playerId);
 
+  const roster = manager.players
+    .map((mp) => {
+      const pl = findPlayer(players, mp.playerId);
+      if (!pl) return null;
+      return {
+        playerId: mp.playerId,
+        nome: pl.nome,
+        squadra: pl.squadra,
+        ruoloMantra: pl.ruoloMantra,
+        famiglia: pl.computed.famiglia433,
+        paidPrice: mp.paidPrice,
+        acquiredAt: mp.acquiredAt,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r != null)
+    .sort((a, b) => b.paidPrice - a.paidPrice);
+
   return {
     managerId: manager.id,
     name: manager.name,
+    budgetInitial: manager.budgetInitial,
     budgetResidual: manager.budgetResidual,
     slotsFilled: manager.slotsFilled,
     slotsTotal: manager.slotsTotal,
@@ -70,6 +99,7 @@ export function buildOpponentReport(manager: ManagerState, players: Player[]): O
     prezzoMedio,
     acquistiPremium,
     style: inferOpponentStyle(manager, players),
+    players: roster,
   };
 }
 

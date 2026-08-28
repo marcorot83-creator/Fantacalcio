@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { Player } from "@fanta/shared";
+import type { PairingInfo, Player } from "@fanta/shared";
 
 export default function PlayerDetailModal({
   sessionId, playerId, onClose,
 }: { sessionId: string; playerId: string; onClose: () => void }) {
   const [player, setPlayer] = useState<Player | null>(null);
   const [why, setWhy] = useState<string[]>([]);
+  const [pairings, setPairings] = useState<PairingInfo[]>([]);
 
   useEffect(() => {
     api.player(playerId).then(setPlayer);
     api.why(sessionId, playerId).then((r) => setWhy(r.reasons));
+    api.pairing(playerId).then(setPairings);
   }, [sessionId, playerId]);
 
   return (
@@ -42,6 +44,22 @@ export default function PlayerDetailModal({
 
             <h3>Perché comprarlo nella mia rosa?</h3>
             <ul>{why.map((w, i) => <li key={i}>{w}</li>)}</ul>
+
+            {pairings.length > 0 && (
+              <>
+                <h3>Ballottaggio / coppia</h3>
+                <ul>
+                  {pairings.map((p, i) => (
+                    <li key={i}>
+                      {(p.tipo || "").toLowerCase().includes("ballottaggio") ? "In ballottaggio con" : "Abbinato a"}{" "}
+                      <b style={{ color: "var(--text)" }}>{p.competitorName}</b>
+                      {p.ruoloCompetitor ? ` (${p.ruoloCompetitor})` : ""}
+                      {p.nota ? ` — ${p.nota}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
 
             {player.fontiTitolarita && (
               <p style={{ fontSize: "0.75rem", color: "var(--muted)" }}>

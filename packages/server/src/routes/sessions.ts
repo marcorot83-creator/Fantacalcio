@@ -4,7 +4,8 @@ import {
   createNewAuctionSession, resetSessionInPlace, applyAuctionEvent, computeBidRecommendation,
   findAlternatives, simulateWhatIf, suggestNomination, buildAllOpponentReports, buildOpponentReport,
   runFeasibilityChecks, buildStatusSummary, renderStatusText, explainWhyForMyRoster, parseCommand,
-  getMyManager, computeDynamicMax, netSurplus, slotsStillToBuy, findOpenSlotForFamily,
+  getMyManager, computeDynamicMax, netSurplus, slotsStillToBuy, findOpenSlotForFamily, fuzzyFind,
+  describePlayerOwnership, findPairingInfo, describePairing,
 } from "@fanta/shared";
 import { store } from "../persistence";
 
@@ -58,6 +59,18 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     res.json({ ok: true });
   }));
 
+  // "Chiudi asta": the auction itself is over (all rosters done, or you're
+  // just done with it) — becomes read-only but stays in the archive as
+  // COMPLETED rather than ARCHIVED (which is reserved for "superseded by a
+  // new auction"). Distinct from delete, which is permanent.
+  router.post("/sessions/:id/close", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    session.status = "COMPLETED";
+    session.updatedAt = new Date().toISOString();
+    await store.saveSession(session);
+    res.json(session);
+  }));
+
   router.delete("/sessions/:id", asyncHandler(async (req, res) => {
     await store.deleteSession(req.params.id);
     res.json({ ok: true });
@@ -84,6 +97,42 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     const mgr = session.managers.find((m) => m.id === req.params.managerId);
     if (!mgr) return res.status(404).json({ error: "manager not found" });
     res.json(buildOpponentReport(mgr, getDb().players));
+  }));
+
+  // --------------------- Listone: browse remaining players by role ---------------------
+  const LISTONE_SORT_KEYS: Record<string, (p: Player) => number> = {
+    indiceFanta: (p) => p.computed.indiceFanta,
+    indiceAffare: (p) => p.computed.indiceAffare,
+    prezzoObiettivo: (p) => p.computed.prezzoObiettivo,
+    offertaMax: (p) => p.computed.offertaMaxBase,
+    titolarita: (p) => p.computed.titolarita,
+    quot: (p) => p.quot ?? 0,
+    gemScore: (p) => p.computed.gemScore,
+  };
+  const TAKEN_STATUSES = new Set(["WON_BY_ME", "WON_BY_OPPONENT", "UNAVAILABLE"]);
+
+  router.get("/sessions/:id/listone", asyncHandler(async (req, res) => {
+    const session = await requireSession(req.params.id);
+    const db = getDb();
+    const { famiglia, q, sortBy = "indiceFanta", order = "desc", limit } = req.query as Record<string, string | undefined>;
+
+    let players = db.players.filter((p) => {
+      const st = session.playerStates[p.id];
+      return !st || !TAKEN_STATUSES.has(st.status);
+    });
+    if (famiglia) players = players.filter((p) => p.computed.famiglia433 === famiglia);
+    if (q) {
+      players = fuzzyFind(q, players, (p) => p.nome).filter((m) => m.score >= 0.4).map((m) => m.item);
+    }
+
+    const accessor = LISTONE_SORT_KEYS[sortBy ?? ""] ?? LISTONE_SORT_KEYS.indiceFanta;
+    const dir = order === "asc" ? 1 : -1;
+    players = [...players].sort((a, b) => (accessor(a) - accessor(b)) * dir);
+
+    res.json({
+      count: players.length,
+      players: players.slice(0, limit ? Number(limit) : 200),
+    });
   }));
 
   // --------------------- Events (section 25) ---------------------
@@ -177,15 +226,27 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     if (!(parsed.playerAmbiguous && parsed.playerAmbiguous.length > 1)) {
       if (parsed.intent === "WON_BY_ME" && parsed.playerId && parsed.price != null) {
         const player = db.players.find((p) => p.id === parsed.playerId)!;
-        const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_WON_BY_ME", playerId: player.id, price: parsed.price });
-        await store.saveSession(next);
-        return res.json({ parsed, session: next, event, reply: renderWonByMeReply(next, player) });
+        const owned = describePlayerOwnership(session, player.id);
+        if (owned) return res.json({ parsed, reply: `${player.nome} è già ${owned}.` });
+        try {
+          const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_WON_BY_ME", playerId: player.id, price: parsed.price });
+          await store.saveSession(next);
+          return res.json({ parsed, session: next, event, reply: renderWonByMeReply(next, player) });
+        } catch (e: any) {
+          return res.json({ parsed, reply: e.message });
+        }
       }
       if (parsed.intent === "SOLD_TO_OPPONENT" && parsed.playerId && parsed.price != null && parsed.managerId) {
         const player = db.players.find((p) => p.id === parsed.playerId)!;
-        const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_SOLD_TO_OPPONENT", playerId: player.id, price: parsed.price, managerId: parsed.managerId });
-        await store.saveSession(next);
-        return res.json({ parsed, session: next, event, reply: renderLostReply(next, db, player, parsed.price, parsed.managerId) });
+        const owned = describePlayerOwnership(session, player.id);
+        if (owned) return res.json({ parsed, reply: `${player.nome} è già ${owned}.` });
+        try {
+          const { session: next, event } = applyAuctionEvent(session, db, { type: "PLAYER_SOLD_TO_OPPONENT", playerId: player.id, price: parsed.price, managerId: parsed.managerId });
+          await store.saveSession(next);
+          return res.json({ parsed, session: next, event, reply: renderLostReply(next, db, player, parsed.price, parsed.managerId) });
+        } catch (e: any) {
+          return res.json({ parsed, reply: e.message });
+        }
       }
       if (parsed.intent === "UNDO") {
         try {
@@ -249,6 +310,8 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       case "BID_UPDATE":
       case "RILANCIA_QUERY": {
         if (!player) return { parsed, reply: "Non ho capito quale giocatore. Puoi ripetere il nome?" };
+        const ownedNominate = describePlayerOwnership(session, player.id);
+        if (ownedNominate) return { parsed, reply: `${player.nome} è già ${ownedNominate}.` };
         const currentBid = parsed.price ?? player.computed.prezzoObiettivo;
         const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState });
         return { parsed, recommendation: rec, reply: `${rec.headline}\n${rec.reasons.join("\n")}` };
@@ -297,7 +360,21 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       case "STATUS_QUERY_PLAYER": {
         if (!player) return { parsed, reply: "Non trovo questo giocatore." };
         const st = session.playerStates[player.id];
-        return { parsed, player, playerState: st, reply: `${player.nome} (${player.squadra}, ${player.ruoloMantra}) — stato: ${st?.status ?? "AVAILABLE"}. Target ${player.computed.prezzoObiettivo}, max ${player.computed.offertaMaxBase}.` };
+        const owned = describePlayerOwnership(session, player.id);
+        let reply = owned
+          ? `${player.nome} è già ${owned}.`
+          : `${player.nome} (${player.squadra}, ${player.ruoloMantra}) — stato: ${st?.status ?? "AVAILABLE"}. Target ${player.computed.prezzoObiettivo}, max ${player.computed.offertaMaxBase}.`;
+        if (!owned && player.rischio?.toUpperCase().includes("BALLOTTAGGIO")) {
+          const pairings = findPairingInfo(db, player.id);
+          if (pairings.length) reply += `\n${describePairing(player.nome, pairings)}`;
+        }
+        return { parsed, player, playerState: st, reply };
+      }
+      case "BALLOTTAGGIO_QUERY":
+      case "PAIR_QUERY": {
+        if (!player) return { parsed, reply: "Di chi vuoi sapere il ballottaggio/coppia?" };
+        const pairings = findPairingInfo(db, player.id);
+        return { parsed, pairings, reply: describePairing(player.nome, pairings) };
       }
       case "RECOMMEND_ROLE":
       case "NEED_UNDER_PRICE": {

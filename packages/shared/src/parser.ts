@@ -4,7 +4,7 @@ import { fuzzyFind, normalizeName, type FuzzyMatch } from "./util";
 export type ParserIntent =
   | "NOMINATE" | "BID_UPDATE" | "RILANCIA_QUERY" | "WON_BY_ME" | "SOLD_TO_OPPONENT" | "LOST_UNKNOWN"
   | "STATUS_QUERY_PLAYER" | "RECOMMEND_ROLE" | "NEED_UNDER_PRICE" | "GEMS_QUERY" | "WHO_TO_CALL"
-  | "MAX_SPEND" | "WHATIF" | "ALTERNATIVES" | "PAIR_QUERY" | "OPPONENTS_NEED" | "OPPONENTS_AVG_SPEND"
+  | "MAX_SPEND" | "WHATIF" | "ALTERNATIVES" | "PAIR_QUERY" | "BALLOTTAGGIO_QUERY" | "OPPONENTS_NEED" | "OPPONENTS_AVG_SPEND"
   | "OVERSPEND_QUERY" | "RECALC_STRATEGY" | "AUTO_ON" | "AUTO_OFF" | "STATUS" | "ROSTER" | "BUDGET"
   | "OPPONENTS" | "UNDO" | "NEW_AUCTION" | "UNKNOWN";
 
@@ -45,11 +45,15 @@ function extractFamily(text: string): Famiglia433 | null {
 }
 
 function stripKnownWords(text: string, words: string[]): string {
-  let t = text;
-  for (const w of words) {
-    t = t.replace(new RegExp(`\\b${w}\\b`, "gi"), " ");
-  }
-  return t.replace(/\d+([.,]\d+)?/g, " ").replace(/\s+/g, " ").trim();
+  // Tokenize and drop whole tokens that normalize to a stopword, instead of
+  // a regex \b replace: \b only recognizes ASCII word characters, so it
+  // silently fails to match accented stopwords like "è" (no boundary is
+  // detected between a space and a non-ASCII character), leaving them in
+  // the cleaned text to pollute matching.
+  const stopSet = new Set(words.map((w) => normalizeName(w)));
+  const noDigits = text.replace(/\d+([.,]\d+)?/g, " ");
+  const tokens = noDigits.split(/\s+/).filter(Boolean);
+  return tokens.filter((t) => !stopSet.has(normalizeName(t))).join(" ");
 }
 
 const STOPWORDS = [
@@ -62,13 +66,41 @@ const STOPWORDS = [
   "spesa", "mediamente", "gli", "altri", "sui", "sto", "spendendo", "troppo", "ricalcola", "strategia",
   "passa", "modalita", "modalità", "automatica", "automatico", "gia", "già", "uscito", "uscita", "perso",
   "persa", "ce", "l", "ho", "rilancio", "meno", "sotto", "credito", "crediti",
+  "con", "ballottaggio", "coppia", "copertura", "in", "lo", "le", "questo", "questa", "quello",
+  "sara", "sarà", "puo", "può", "deve", "devo", "vale", "valgono", "info", "informazioni",
 ];
 
+/**
+ * Fuzzy-matches a player name out of a free-text sentence. Rather than
+ * scoring the whole (stopword-stripped) sentence as one blob — which is
+ * thrown off by any filler word we didn't think to list in STOPWORDS — it
+ * also tries every 1-3 word window and keeps whichever one scores best.
+ * That keeps it robust to sentences like "con chi è in ballottaggio X?"
+ * even when "in" isn't itself a recognized stopword.
+ */
 function findPlayerMatch(text: string, players: Player[], managers: ManagerRef[]): FuzzyMatch<Player>[] {
   const cleaned = stripKnownWords(text, [...STOPWORDS, ...managers.map((m) => m.name)]);
   if (!cleaned) return [];
-  const matches = fuzzyFind(cleaned, players, (p) => p.nome).filter((m) => m.score >= 0.5);
-  return matches;
+
+  const words = cleaned.split(" ").filter(Boolean);
+  const candidates = new Set<string>([cleaned]);
+  for (let size = 1; size <= 3; size++) {
+    for (let i = 0; i + size <= words.length; i++) {
+      candidates.add(words.slice(i, i + size).join(" "));
+    }
+  }
+
+  let best: FuzzyMatch<Player>[] = [];
+  let bestTopScore = -1;
+  for (const cand of candidates) {
+    if (normalizeName(cand).length < 3) continue; // degenerate short windows match everything via startsWith
+    const matches = fuzzyFind(cand, players, (p) => p.nome);
+    if (matches[0] && matches[0].score > bestTopScore) {
+      bestTopScore = matches[0].score;
+      best = matches;
+    }
+  }
+  return best.filter((m) => m.score >= 0.5);
 }
 
 function findManagerMatch(text: string, managers: ManagerRef[]): ManagerRef | null {
@@ -170,6 +202,10 @@ export function parseCommand(
   }
   if (/quanto hanno speso mediamente/.test(nt)) return { ...base, intent: "OPPONENTS_AVG_SPEND", family: extractFamily(nt) };
   if (/hanno ancora bisogno di/.test(nt)) return { ...base, intent: "OPPONENTS_NEED", family: extractFamily(nt) };
+  if (/ballottaggio/.test(nt)) {
+    const { playerId, ambiguous } = resolvePlayer(findPlayerMatch(raw, ctx.players, ctx.managers));
+    return { ...base, intent: "BALLOTTAGGIO_QUERY", playerId, playerAmbiguous: ambiguous };
+  }
   if (/^conviene fare /.test(nt) || /coppia|copertura/.test(nt)) {
     const matches = findPlayerMatch(raw, ctx.players, ctx.managers);
     return { ...base, intent: "PAIR_QUERY", playerAmbiguous: matches.length ? matches.slice(0, 5) : null };

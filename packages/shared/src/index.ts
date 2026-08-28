@@ -15,3 +15,4 @@ export * from "./feasibility";
 export * from "./status";
 export * from "./parser";
 export * from "./explain";
+export * from "./pairing";

@@ -62,6 +62,19 @@ export function renderStatusText(summary: StatusSummary): string {
   return lines.join("\n");
 }
 
+/** Short fragment describing who already owns a player, or null if still gettable. */
+export function describePlayerOwnership(session: AuctionSession, playerId: string): string | null {
+  const st = session.playerStates[playerId];
+  if (!st) return null;
+  if (st.status === "WON_BY_ME") return `preso da te a ${st.paidPrice}`;
+  if (st.status === "WON_BY_OPPONENT") {
+    const mgr = session.managers.find((m) => m.id === st.ownerManagerId);
+    return `preso da ${mgr?.name ?? "un altro manager"} a ${st.paidPrice}`;
+  }
+  if (st.status === "UNAVAILABLE") return "fuori lista / non disponibile";
+  return null;
+}
+
 /** Traffic-light signal for a price vs a player's baseline (section 48). */
 export type Semaforo = "verde" | "giallo" | "arancione" | "rosso" | "viola";
 

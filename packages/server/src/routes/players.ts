@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { PlayerDatabase } from "@fanta/shared";
-import { fuzzyFind } from "@fanta/shared";
+import { fuzzyFind, findPairingInfo } from "@fanta/shared";
 
 export function playersRouter(getDb: () => PlayerDatabase): Router {
   const router = Router();
@@ -34,6 +34,12 @@ export function playersRouter(getDb: () => PlayerDatabase): Router {
     const player = getDb().players.find((p) => p.id === req.params.id);
     if (!player) return res.status(404).json({ error: "not found" });
     res.json(player);
+  });
+
+  router.get("/players/:id/pairing", (req, res) => {
+    const player = getDb().players.find((p) => p.id === req.params.id);
+    if (!player) return res.status(404).json({ error: "not found" });
+    res.json(findPairingInfo(getDb(), player.id));
   });
 
   router.get("/graduatorie/:famiglia", (req, res) => {

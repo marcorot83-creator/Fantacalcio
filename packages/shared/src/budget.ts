@@ -143,17 +143,23 @@ export interface DynamicMaxFactors {
  * open slot exists at all for this role (the need is already fully met),
  * fall back to a steep fraction of the player's own value.
  *
- * A materially better player than what the slot was planned for still pulls
- * some headroom above the plan (section 16: "value opportunity" must stay
- * reachable) — but only a modest share of that gap leaks through, so the
- * slot's own diminishing-value curve remains the dominant signal rather
- * than the player's raw market price.
+ * This must cut both ways. A materially better player than what the slot
+ * was planned for still pulls some headroom above the plan (section 16:
+ * "value opportunity" must stay reachable) — but only a modest share of
+ * that gap leaks through, so the slot's own diminishing-value curve remains
+ * the dominant signal rather than the player's raw market price. Symmetrically,
+ * a bargain-bin player filling a slot the plan still budgets generously for
+ * (e.g. a Scommessa-tier bench winger landing on a still-open "A1 TOP" slot)
+ * must NOT inherit that slot's full premium budget just because nobody
+ * has filled it yet — their own intrinsic market value stays the anchor,
+ * with only a small pull toward the roomier plan. Anchor on whichever of
+ * the two is smaller, with the same modest leak toward the larger one.
  */
 function computeSlotAnchoredMax(basePlayerMax: number, slot: RosterSlot | undefined): { slotBudgetAnchor: number; marginalUtilityAdjustment: number; anchorMax: number } {
   const slotBudgetAnchor = slot ? slot.targetBudgetDynamic : Math.max(1, Math.round(basePlayerMax * 0.22));
-  const qualityGap = Math.max(0, basePlayerMax - slotBudgetAnchor);
-  const qualityLeakage = qualityGap * 0.18;
-  const anchorMax = slotBudgetAnchor + qualityLeakage;
+  const floor = Math.min(basePlayerMax, slotBudgetAnchor);
+  const ceiling = Math.max(basePlayerMax, slotBudgetAnchor);
+  const anchorMax = floor + (ceiling - floor) * 0.18;
   const marginalUtilityAdjustment = slotBudgetAnchor > 0 ? anchorMax / slotBudgetAnchor : 1;
   return { slotBudgetAnchor, marginalUtilityAdjustment, anchorMax };
 }

@@ -38,6 +38,15 @@ const malen = db.players.find((p) => p.nome === "Malen")!;
 const lautaro = db.players.find((p) => p.nome === "Martinez L.")!;
 assert.ok(malen && lautaro, "seed dataset must contain Malen and Martinez L. (Lautaro) for this scenario");
 
+// A real-world-price-anchor regression: a bargain-bin bit-part player must
+// not inherit a still-open premium slot's full budget just because nobody
+// has filled it yet (reported live: Yeboah, a Scommessa-tier winger from a
+// small-blasone club worth 19 credits intrinsically, was getting a
+// "RILANCIA FINO A 76" because he happened to be the best fit for the
+// still-open "A1 TOP" slot, budgeted at 65).
+const yeboah = db.players.find((p) => p.nome === "Yeboah J.")!;
+assert.ok(yeboah, "seed dataset must contain Yeboah J. for this scenario");
+
 function freshSession(auctionStyle: AuctionStyleId = "PRUDENT"): AuctionSession {
   return createNewAuctionSession(db, { settings: { primaryFormation: "4-3-3", strategyProfile: "BOMBER_GEMS", auctionStyle } });
 }
@@ -112,6 +121,18 @@ test("48. equilibrium: Malen@164 then Lautaro at 160 must be MOLLA under Prudent
   const after = buy(base, malen.id, 164);
   const recommendation = rec(after, lautaro, 160);
   assert.strictEqual(recommendation.action, "MOLLA", `expected MOLLA at 160 after Malen@164, got ${recommendation.action} (${recommendation.headline})`);
+});
+
+test("bargain player does not inherit a still-open premium slot's full budget", () => {
+  const session = freshSession("PRUDENT");
+  const recommendation = rec(session, yeboah, 1);
+  assert.strictEqual(recommendation.slot, "A1", "sanity: Yeboah should be matched to the still-open A1 slot");
+  const slotBudget = session.rosterSlots.find((s) => s.slotKey === "A1")!.targetBudgetDynamic;
+  assert.ok(slotBudget > yeboah.computed.offertaMaxBase * 2, "sanity: the A1 TOP slot plan must be well above Yeboah's own intrinsic value for this to be a real test");
+  assert.ok(
+    recommendation.dynamicMax < yeboah.computed.offertaMaxBase * 2.5,
+    `a Scommessa-tier player worth ${yeboah.computed.offertaMaxBase} must not get a cap anywhere near the slot's premium budget (${slotBudget}), got dynamicMax=${recommendation.dynamicMax}`
+  );
 });
 
 test("38. UNDO restores DynamicMax exactly (event-sourced, no stale cache)", () => {

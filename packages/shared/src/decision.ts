@@ -128,7 +128,7 @@ export function computeBidRecommendation(params: {
     reasons.push(`Nel tuo ${formation.name} + ${strategy.name} questo ruolo non ha uno slot strutturale scoperto: non serve pagare sopra target.`);
   } else if (currentBid <= bandTarget * 0.97) {
     action = "ATTACCA";
-    headline = `ATTACCA. RILANCIA FINO A ${dynamicMax}.`;
+    headline = `ATTACCA. RILANCIA FINO A ${ceiling}.`;
     reasons.push(`Prezzo attuale ${currentBid} è sotto il target per la tua rosa (${bandTarget}).`);
     if (slot) reasons.push(`Copre lo slot ${slot.slotKey} (${slot.profilo}), ancora scoperto.`);
     if (strategicFitScore >= 70) reasons.push(`StrategicFitScore ${strategicFitScore}: coerente con ${formation.name} + ${strategy.name}.`);
@@ -140,8 +140,17 @@ export function computeBidRecommendation(params: {
     if (slot) reasons.push(`Slot ${slot.slotKey} ancora aperto: acquisto coerente col piano.`);
   } else {
     action = "RILANCIA";
-    headline = `RILANCIA FINO A ${dynamicMax}.`;
-    reasons.push(`Prezzo ${currentBid} è sopra il target per la tua rosa (${bandTarget}) ma sotto la red line dinamica (${dynamicMax}).`);
+    headline = `RILANCIA FINO A ${ceiling}.`;
+    // currentBid <= ceiling is already guaranteed here (the MOLLA branch above
+    // catches anything past it) — but ceiling can be the style's override
+    // (aggressiveMax), which sits above the plain dynamicMax. Say so
+    // precisely instead of always claiming "sotto la red line dinamica",
+    // which would be false whenever the override is what's actually covering it.
+    reasons.push(
+      currentBid <= dynamicMax
+        ? `Prezzo ${currentBid} è sopra il target per la tua rosa (${bandTarget}) ma sotto la red line dinamica (${dynamicMax}).`
+        : `Prezzo ${currentBid} supera la red line dinamica (${dynamicMax}), ma resta entro l'override ${style.name.toLowerCase()} (${ceiling}).`
+    );
     if (strategicFitScore < 50) {
       reasons.push(`StrategicFitScore basso (${strategicFitScore}) per ${formation.name} + ${strategy.name}: non forzare oltre il necessario.`);
     } else if (scarcity && (scarcity.level === "alta" || scarcity.level === "critica")) {

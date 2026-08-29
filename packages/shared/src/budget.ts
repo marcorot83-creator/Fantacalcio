@@ -250,7 +250,11 @@ export function computeDynamicMax(params: {
   // alone is supposed to contribute. Scaled off anchorMax (not the player's
   // raw basePlayerMax) so a saturated slot stays capped even here.
   const sanityCeiling = anchorMax * 1.6;
-  const dynamicMax = Math.max(1, Math.min(beforeCaps, budgetFeasibilityCap, rosterCompletionCap, sanityCeiling));
+  // Credits are always whole numbers in this domain — round the final value
+  // rather than each intermediate term, so whichever term ends up binding
+  // (sanityCeiling and the caps carry fractional player values like 172.8
+  // through un-rounded) never leaks a fractional credit into the UI/reasons.
+  const dynamicMax = Math.round(Math.max(1, Math.min(beforeCaps, budgetFeasibilityCap, rosterCompletionCap, sanityCeiling)));
 
   return {
     basePlayerMax, slotBudgetAnchor, marginalUtilityAdjustment, formationFit, strategyImportance, marketAdjustment, scarcityAdjustment,

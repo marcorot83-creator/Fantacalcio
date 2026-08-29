@@ -155,5 +155,42 @@ test("value opportunity: an exceptionally cheap Lautaro is still ATTACCA within 
   assert.strictEqual(recommendation.action, "ATTACCA", `a bid well under the reduced ceiling (${ceiling}) should still be ATTACCA, got ${recommendation.action}`);
 });
 
+// Reported live: "Prezzo 56 è sopra il target per la tua rosa (46) ma sotto
+// la red line dinamica (55)" — self-contradictory, since 56 > 55. Happens
+// whenever the aggressive-style override lifts the true ceiling above the
+// plain dynamicMax: a bid can sit above dynamicMax but still be RILANCIA
+// (not MOLLA) because it's covered by the override, and the old text always
+// claimed "sotto la red line dinamica (dynamicMax)" regardless.
+test("RILANCIA reasoning never claims a bid is below dynamicMax when it isn't", () => {
+  const session = freshSession("AGGRESSIVE");
+  // Malen/Pc1 reliably produces a financeable aggressive override under AGGRESSIVE.
+  const dm = rec(session, malen);
+  assert.ok(dm.aggressiveMax > dm.dynamicMax, "sanity: need a real gap between dynamicMax and the aggressive override for this scenario");
+  const bid = dm.aggressiveMax - 1; // above dynamicMax, within the override
+  assert.ok(bid > dm.dynamicMax, "sanity: the chosen bid must actually exceed the plain dynamicMax");
+  const recommendation = rec(session, malen, bid);
+  assert.strictEqual(recommendation.action, "RILANCIA");
+  const contradicts = recommendation.reasons.some((r) => /sotto la red line dinamica/.test(r));
+  assert.ok(!contradicts, `reasons must not claim "sotto la red line dinamica" when the bid (${bid}) exceeds it (${dm.dynamicMax}): ${JSON.stringify(recommendation.reasons)}`);
+  assert.ok(
+    recommendation.reasons.some((r) => /supera la red line dinamica/.test(r)),
+    `expected a reason explaining the bid exceeds dynamicMax but is covered by the override, got: ${JSON.stringify(recommendation.reasons)}`
+  );
+});
+
+test("DynamicMax and AggressiveMax are always whole credit numbers", () => {
+  // offertaMaxBase itself can be fractional in the source data (e.g. 172.8);
+  // computeDynamicMax must round its final result regardless of which
+  // intermediate cap ends up binding.
+  for (const styleId of ["PRUDENT", "MEDIUM", "AGGRESSIVE"] as const) {
+    const session = freshSession(styleId);
+    for (const player of db.players.slice(0, 100)) {
+      const r = rec(session, player);
+      assert.strictEqual(r.dynamicMax, Math.round(r.dynamicMax), `dynamicMax must be a whole number, got ${r.dynamicMax} for ${player.nome} (${styleId})`);
+      assert.strictEqual(r.aggressiveMax, Math.round(r.aggressiveMax), `aggressiveMax must be a whole number, got ${r.aggressiveMax} for ${player.nome} (${styleId})`);
+    }
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed.\n`);
 if (failed > 0) process.exit(1);

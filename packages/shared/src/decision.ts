@@ -8,6 +8,7 @@ import { getFormation } from "./formations";
 import { getStrategy } from "./strategies";
 import { getAuctionStyle } from "./auctionStyle";
 import { computeStrategicFitScore } from "./strategicFit";
+import type { PlayerIntelligenceStore } from "./intelligence/types";
 
 /** @deprecated use findOpenSlotForRoles — kept for any lingering Famiglia433-only caller. */
 export function findOpenSlotForFamily(rosterSlots: RosterSlot[], famiglia: Famiglia433): RosterSlot | undefined {
@@ -51,8 +52,9 @@ export function computeBidRecommendation(params: {
   graduatorie: GraduatoriaEntry[];
   session: AuctionSession;
   marketState: MarketState;
+  intelligence?: PlayerIntelligenceStore;
 }): BidRecommendation {
-  const { player, currentBid, players, graduatorie, session, marketState } = params;
+  const { player, currentBid, players, graduatorie, session, marketState, intelligence } = params;
   const famiglia = player.computed.famiglia433;
   const myManager = getMyManager(session);
   const roles = eligibleMantraRoles(player.ruoloMantra);
@@ -67,7 +69,7 @@ export function computeBidRecommendation(params: {
   const dmx = computeDynamicMax({
     player, session, manager: myManager,
     slotsStillToBuy: slotsStillToBuy(myManager, session.rosterSlots) - (slot ? 1 : 0),
-    slot,
+    slot, intelligence,
   });
   const dynamicMax = dmx.dynamicMax;
   const aggressive = computeAggressiveMax({ session, dynamicMax, slot });
@@ -166,6 +168,22 @@ export function computeBidRecommendation(params: {
     }
   }
 
+  // Player Intelligence sections 12-28/35: surface rigorista/goal-threat/
+  // pairing context whenever it's actually meaningful, never as a flat
+  // bonus disconnected from the roster-aware reasoning above.
+  const intel = intelligence?.players[player.id];
+  if (intel) {
+    if (intel.penalty.rank === 1 && intel.penalty.penaltyValueScore >= 40) {
+      reasons.push(`Rigorista #1 (Penalty Value ${intel.penalty.penaltyValueScore}/100): bonus più affidabile del solito.`);
+    }
+    if (intel.goalThreat.confidence !== "NONE" && intel.goalThreat.percentileWithinRole >= 75) {
+      reasons.push(`Goal Threat: ${intel.goalThreat.percentileWithinRole}° percentile nel ruolo (${intel.goalThreat.tier}, confidence ${intel.goalThreat.confidence.toLowerCase()}).`);
+    }
+    if (dmx.pairingUtilityBonus > 0) {
+      reasons.push(`È copertura di un titolare che possiedi già: piccolo margine extra riconosciuto (+${Math.round(dmx.pairingUtilityBonus * 100)}%).`);
+    }
+  }
+
   return {
     action,
     headline,
@@ -182,5 +200,18 @@ export function computeBidRecommendation(params: {
     scarcity,
     reasons,
     alternatives,
+    intelligence: intel
+      ? {
+          lineupCategory: intel.lineup.category,
+          starterProbability: intel.lineup.starterProbability,
+          battleId: intel.lineup.battleId,
+          penaltyRank: intel.penalty.rank,
+          goalThreatPercentile: intel.goalThreat.confidence === "NONE" ? null : intel.goalThreat.percentileWithinRole,
+          goalThreatTier: intel.goalThreat.confidence === "NONE" ? null : intel.goalThreat.tier,
+          goalThreatConfidence: intel.goalThreat.confidence,
+          bonusPotential: intel.bonusPotential.score,
+          setPieceValueScore: intel.setPieces.setPieceValueScore,
+        }
+      : null,
   };
 }

@@ -1,4 +1,4 @@
-import type { AuctionSession, PlayerDatabase } from "@fanta/shared";
+import type { AuctionSession, ManualImportPayload, ManualOverride, PlayerDatabase } from "@fanta/shared";
 
 export interface SessionSummary {
   id: string;
@@ -6,6 +6,12 @@ export interface SessionSummary {
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Player Intelligence section 45/46: raw inputs the derived store is rebuilt from on every read — never the derived scores themselves. */
+export interface IntelligenceRawData {
+  importPayload: ManualImportPayload | null;
+  overrides: Record<string, ManualOverride>;
 }
 
 /**
@@ -25,4 +31,7 @@ export interface Store {
   saveSession(session: AuctionSession): Promise<void>;
   archiveSession(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
+
+  loadIntelligenceRaw(): Promise<IntelligenceRawData | null>;
+  saveIntelligenceRaw(data: IntelligenceRawData): Promise<void>;
 }

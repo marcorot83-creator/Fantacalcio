@@ -24,3 +24,4 @@ export * from "./rosterStructure";
 export * from "./strategicFit";
 export * from "./liveRank";
 export * from "./compatibility";
+export * from "./intelligence";

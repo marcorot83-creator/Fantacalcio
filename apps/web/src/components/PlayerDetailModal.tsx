@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { PairingInfo, Player } from "@fanta/shared";
+import type { PairingInfo, Player, PlayerIntelligence } from "@fanta/shared";
+
+const LINEUP_LABELS: Record<string, string> = {
+  NAILED: "Titolare inamovibile", STRONG_STARTER: "Titolare forte", FAVORITE: "Favorito",
+  BALLOT: "Ballottaggio", BACKUP: "Riserva", FRINGE: "Ai margini",
+};
+
+const SET_PIECE_LABELS: Record<string, string> = { PRIMARY: "primario", SECONDARY: "secondario", OCCASIONAL: "occasionale", NONE: "nessuno" };
 
 export default function PlayerDetailModal({
   sessionId, playerId, onClose,
@@ -8,11 +15,14 @@ export default function PlayerDetailModal({
   const [player, setPlayer] = useState<Player | null>(null);
   const [why, setWhy] = useState<string[]>([]);
   const [pairings, setPairings] = useState<PairingInfo[]>([]);
+  const [intel, setIntel] = useState<PlayerIntelligence | null>(null);
 
   useEffect(() => {
     api.player(playerId).then(setPlayer);
     api.why(sessionId, playerId).then((r) => setWhy(r.reasons));
     api.pairing(playerId).then(setPairings);
+    setIntel(null);
+    api.playerIntelligence(playerId).then(setIntel).catch(() => setIntel(null));
   }, [sessionId, playerId]);
 
   return (
@@ -44,6 +54,45 @@ export default function PlayerDetailModal({
 
             <h3>Perché comprarlo nella mia rosa?</h3>
             <ul>{why.map((w, i) => <li key={i}>{w}</li>)}</ul>
+
+            {intel && (
+              <>
+                <h3>Gerarchia</h3>
+                <div className="metrics">
+                  <div className="metric"><div className="label">Titolarità</div><div className="value">{intel.lineup.starterProbability}%</div></div>
+                  <div className="metric"><div className="label">Status</div><div className="value" style={{ fontSize: "0.95rem" }}>{LINEUP_LABELS[intel.lineup.category] ?? intel.lineup.category}</div></div>
+                </div>
+
+                {(intel.penalty.rank != null || intel.setPieces.setPieceValueScore > 0) && (
+                  <>
+                    <h3>Bonus</h3>
+                    <div className="metrics">
+                      <div className="metric"><div className="label">Rigorista</div><div className="value">{intel.penalty.rank ? `#${intel.penalty.rank}` : "—"}</div></div>
+                      <div className="metric"><div className="label">Corner</div><div className="value" style={{ fontSize: "0.85rem" }}>{SET_PIECE_LABELS[intel.setPieces.cornerRole]}</div></div>
+                      <div className="metric"><div className="label">Punizioni</div><div className="value" style={{ fontSize: "0.85rem" }}>{SET_PIECE_LABELS[intel.setPieces.directFreeKickRole]}</div></div>
+                      <div className="metric"><div className="label">Ind. punizioni</div><div className="value" style={{ fontSize: "0.85rem" }}>{SET_PIECE_LABELS[intel.setPieces.indirectFreeKickRole]}</div></div>
+                    </div>
+                  </>
+                )}
+
+                <h3>Goal Threat</h3>
+                <div className="metrics">
+                  <div className="metric"><div className="label">Goal Threat</div><div className="value">{intel.goalThreat.confidence === "NONE" ? "n/d" : `${intel.goalThreat.index}/100`}</div></div>
+                  <div className="metric"><div className="label">Percentile ruolo</div><div className="value">{intel.goalThreat.confidence === "NONE" ? "n/d" : `${intel.goalThreat.percentileWithinRole}°`}</div></div>
+                  <div className="metric"><div className="label">Confidence</div><div className="value" style={{ fontSize: "0.85rem" }}>{intel.goalThreat.confidence}</div></div>
+                  <div className="metric"><div className="label">Bonus Potential</div><div className="value">{intel.penalty.rank == null && intel.setPieces.setPieceValueScore === 0 && intel.goalThreat.confidence === "NONE" ? "n/d" : intel.bonusPotential.score}</div></div>
+                </div>
+                {intel.goalThreat.confidence === "NONE" && (
+                  <p className="wizard-hint">Nessun dato importato su gol/xG per questo giocatore: nessuna conclusione forzata.</p>
+                )}
+                {intel.updatedAt && (
+                  <p style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
+                    Player Intelligence aggiornata: {new Date(intel.updatedAt).toLocaleString("it-IT")} ({intel.goalThreat.staleness.toLowerCase()})
+                    {intel.manualOverride && " · override manuale attivo"}
+                  </p>
+                )}
+              </>
+            )}
 
             {pairings.length > 0 && (
               <>

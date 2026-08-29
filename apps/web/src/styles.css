@@ -190,6 +190,11 @@ a { color: var(--accent); }
 .listone-table td.warn { color: var(--orange); }
 .listone-actions { display: flex; gap: 6px; }
 .listone-actions button { padding: 4px 10px; font-size: 0.78rem; }
+.listone-check { display: flex; align-items: center; gap: 4px; font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+.listone-check input[type="checkbox"] { flex: none; width: auto; min-width: 0; }
+.listone-check input[type="number"] { flex: none; width: 50px; min-width: 0; padding: 4px 6px; }
+.listone-badges { display: flex; gap: 4px; flex-wrap: wrap; white-space: normal; }
+.listone-badges .tag { padding: 2px 6px; font-size: 0.68rem; }
 .listone-legend { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--muted); margin-left: auto; }
 .legend-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-left: 10px; margin-right: 2px; }
 .legend-dot.legend-me { background: rgba(79, 140, 255, 0.35); border: 1px solid var(--accent); }

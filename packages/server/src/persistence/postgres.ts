@@ -1,6 +1,6 @@
 import { Pool } from "pg";
 import type { AuctionSession, PlayerDatabase } from "@fanta/shared";
-import type { SessionSummary, Store } from "./types";
+import type { IntelligenceRawData, SessionSummary, Store } from "./types";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS auction_sessions (
   session_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON auction_sessions(status);
+
+CREATE TABLE IF NOT EXISTS player_intelligence_raw (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 export const postgresStore: Store = {
@@ -85,5 +91,20 @@ export const postgresStore: Store = {
   async deleteSession(id: string) {
     await ready;
     await pool.query("DELETE FROM auction_sessions WHERE id = $1", [id]);
+  },
+
+  async loadIntelligenceRaw() {
+    await ready;
+    const { rows } = await pool.query<{ data_json: string }>("SELECT data_json FROM player_intelligence_raw WHERE id = 1");
+    return rows[0] ? (JSON.parse(rows[0].data_json) as IntelligenceRawData) : null;
+  },
+
+  async saveIntelligenceRaw(data: IntelligenceRawData) {
+    await ready;
+    await pool.query(
+      `INSERT INTO player_intelligence_raw (id, data_json, updated_at) VALUES (1, $1, $2)
+       ON CONFLICT (id) DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = EXCLUDED.updated_at`,
+      [JSON.stringify(data), new Date().toISOString()]
+    );
   },
 };

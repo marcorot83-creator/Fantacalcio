@@ -11,6 +11,7 @@ export type ParserIntent =
   | "OVERSPEND_QUERY" | "RECALC_STRATEGY" | "AUTO_ON" | "AUTO_OFF" | "STATUS" | "ROSTER" | "BUDGET"
   | "OPPONENTS" | "UNDO" | "NEW_AUCTION"
   | "QUERY_CONFIG" | "SET_FORMATION" | "SET_STRATEGY" | "SET_STYLE" | "SIMULATE_FORMATION" | "SIMULATE_STRATEGY"
+  | "RIGORISTI_QUERY" | "GOAL_THREAT_QUERY"
   | "UNKNOWN";
 
 export interface ManagerRef { id: string; name: string }
@@ -28,6 +29,10 @@ export interface ParsedCommand {
   formationId: FormationId | null;
   strategyId: StrategyId | null;
   styleId: AuctionStyleId | null;
+  /** Player Intelligence section 38: "chi tira i rigori nel Milan?" — team scope, when named. */
+  teamName: string | null;
+  /** Player Intelligence section 37/38: an explicit numeric threshold, e.g. "goal threat > 70". */
+  threshold: number | null;
 }
 
 const FORMATION_IDS = Object.keys(FORMATIONS) as FormationId[];
@@ -78,6 +83,17 @@ function extractFamily(text: string): Famiglia433 | null {
   for (const [word, fam] of Object.entries(FAMILY_WORDS)) {
     const re = new RegExp(`(^|\\s)${word}(\\s|$|[?.,])`);
     if (re.test(t)) return fam;
+  }
+  return null;
+}
+
+/** Player Intelligence section 38: "chi tira i rigori nel Milan?" — scans real team names, longest first to avoid partial-name ambiguity. */
+function detectTeam(text: string, players: Player[]): string | null {
+  const nt = normalizeName(text);
+  const teams = [...new Set(players.map((p) => p.squadra))].sort((a, b) => b.length - a.length);
+  for (const team of teams) {
+    const nTeam = normalizeName(team);
+    if (nTeam && new RegExp(`(^|\\s)${nTeam}(\\s|$|[?.,])`).test(nt)) return team;
   }
   return null;
 }
@@ -171,6 +187,7 @@ export function parseCommand(
   const base: ParsedCommand = {
     raw, intent: "UNKNOWN", playerId: null, playerAmbiguous: null, price: null, managerId: null,
     family: null, count: null, needsClarification: null, formationId: null, strategyId: null, styleId: null,
+    teamName: null, threshold: null,
   };
 
   // ---- slash commands ----
@@ -274,6 +291,13 @@ export function parseCommand(
   if (/chi chiamo|cosa chiamo/.test(nt)) return { ...base, intent: "WHO_TO_CALL" };
   if (/gioiellin\w+ (sono )?ancora liber\w+|quali gioielli/.test(nt)) {
     return { ...base, intent: "GEMS_QUERY", family: extractFamily(nt) };
+  }
+  if (/rigorist|tira(no)? i rigori|batt(e|ono) i rigori/.test(nt)) {
+    return { ...base, intent: "RIGORISTI_QUERY", family: extractFamily(nt), teamName: detectTeam(raw, ctx.players) };
+  }
+  if (/vizietto del gol|goal threat|propensione al gol|pericolos\w+ (in area|sui gol|in zona gol)|piu propensione al gol|più propensione al gol/.test(nt)) {
+    const thresholdMatch = nt.match(/(?:>|maggiore di|sopra|almeno)\s*(\d+)/);
+    return { ...base, intent: "GOAL_THREAT_QUERY", family: extractFamily(nt), threshold: thresholdMatch ? parseInt(thresholdMatch[1], 10) : (nums[0] ?? null) };
   }
   if (/quanto hanno speso mediamente/.test(nt)) return { ...base, intent: "OPPONENTS_AVG_SPEND", family: extractFamily(nt) };
   if (/hanno ancora bisogno di/.test(nt)) return { ...base, intent: "OPPONENTS_NEED", family: extractFamily(nt) };

@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import type { AuctionSession, PlayerDatabase } from "@fanta/shared";
-import type { SessionSummary, Store } from "./types";
+import type { IntelligenceRawData, SessionSummary, Store } from "./types";
 
 const DATA_DIR = path.join(__dirname, "..", "..", "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -26,6 +26,12 @@ CREATE TABLE IF NOT EXISTS auction_sessions (
   session_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON auction_sessions(status);
+
+CREATE TABLE IF NOT EXISTS player_intelligence_raw (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 const saveSessionTxn = db.transaction((session: AuctionSession) => {
@@ -86,5 +92,19 @@ export const sqliteStore: Store = {
 
   async deleteSession(id: string) {
     db.prepare("DELETE FROM auction_sessions WHERE id = ?").run(id);
+  },
+
+  async loadIntelligenceRaw() {
+    const row = db.prepare("SELECT data_json FROM player_intelligence_raw WHERE id = 1").get() as
+      | { data_json: string }
+      | undefined;
+    return row ? (JSON.parse(row.data_json) as IntelligenceRawData) : null;
+  },
+
+  async saveIntelligenceRaw(data: IntelligenceRawData) {
+    db.prepare(
+      `INSERT INTO player_intelligence_raw (id, data_json, updated_at) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at`
+    ).run(JSON.stringify(data), new Date().toISOString());
   },
 };

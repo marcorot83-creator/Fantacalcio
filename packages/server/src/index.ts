@@ -2,12 +2,14 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import fs from "fs";
-import type { PlayerDatabase } from "@fanta/shared";
+import type { PlayerDatabase, PlayerIntelligenceStore } from "@fanta/shared";
+import { EMPTY_INTELLIGENCE_STORE } from "@fanta/shared";
 import { importExcelFile } from "./importExcel";
 import { store } from "./persistence";
 import { playersRouter } from "./routes/players";
 import { sessionsRouter } from "./routes/sessions";
 import { importRouter } from "./routes/importRoute";
+import { intelligenceRouter, loadAndBuildIntelligence } from "./routes/intelligence";
 
 async function bootstrapDatabase(): Promise<PlayerDatabase> {
   const existing = await store.loadPlayerDatabase();
@@ -20,18 +22,35 @@ async function bootstrapDatabase(): Promise<PlayerDatabase> {
 
 async function main() {
   let playerDb = await bootstrapDatabase();
+  let intelligence: PlayerIntelligenceStore = EMPTY_INTELLIGENCE_STORE;
+  try {
+    intelligence = await loadAndBuildIntelligence(playerDb);
+  } catch (err) {
+    console.error("Player Intelligence: failed to build from persisted data, starting empty.", err);
+  }
 
   const app = express();
   app.use(cors());
   app.use(express.json());
 
   app.use("/api", playersRouter(() => playerDb));
-  app.use("/api", sessionsRouter(() => playerDb));
+  app.use("/api", sessionsRouter(() => playerDb, () => intelligence));
   app.use(
     "/api",
     importRouter((updated) => {
       playerDb = updated;
     })
+  );
+  app.use(
+    "/api",
+    intelligenceRouter(
+      () => playerDb,
+      () => intelligence,
+      (next) => {
+        intelligence = next;
+      },
+      () => loadAndBuildIntelligence(playerDb)
+    )
   );
 
   // Single-service deploy: serve the built frontend (apps/web/dist) from the

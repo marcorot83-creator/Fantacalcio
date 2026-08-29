@@ -3,6 +3,7 @@ import type {
   StrategyConfig, DatasetMeta, BidRecommendation, AlternativeSuggestion, WhatIfResult,
   AuctionEventType, FeasibilityCheck as SharedFeasibilityCheck, OpponentReport, PairingInfo,
   FormationId, StrategyId, AuctionStyleId, SlotPlanItem,
+  PlayerIntelligence, ManualImportPayload, ManualOverride, PenaltyRank, SetPieceRole,
 } from "@fanta/shared";
 
 export interface SetupOptions {
@@ -51,8 +52,37 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
 
 export interface SessionSummary { id: string; name: string; status: string; createdAt: string; updatedAt: string }
 
+export interface ListonePlayerIntelligence {
+  lineupCategory: string;
+  battleId: string | null;
+  penaltyRank: PenaltyRank;
+  goalThreatPercentile: number | null;
+  setPieceValueScore: number;
+  hasPairing: boolean;
+}
+
 export interface ListonePlayer extends Player {
   ownership: { status: string; byMe: boolean; managerName: string | null; paidPrice: number | null } | null;
+  intelligence: ListonePlayerIntelligence | null;
+}
+
+export interface IntelligenceStatus {
+  updatedAt: string | null;
+  playersWithSignal: number;
+  totalPlayers: number;
+  battles: number;
+  pairings: number;
+}
+
+export interface CoverageSuggestion {
+  pairingId: string;
+  type: string;
+  secondary: { id: string; nome: string; squadra: string };
+  targetBudget: number;
+  dynamicMax: number;
+  pairValue: number;
+  recommend: string;
+  reason: string;
 }
 
 export const api = {
@@ -98,7 +128,7 @@ export const api = {
   pairing: (playerId: string) => req<PairingInfo[]>(`/players/${encodeURIComponent(playerId)}/pairing`),
 
   event: (id: string, payload: { type: AuctionEventType; playerId?: string | null; price?: number | null; managerId?: string | null; payload?: any }) =>
-    req<{ session: AuctionSession; event: any }>(`/sessions/${id}/events`, { method: "POST", body: JSON.stringify(payload) }),
+    req<{ session: AuctionSession; event: any; coverage: CoverageSuggestion | null }>(`/sessions/${id}/events`, { method: "POST", body: JSON.stringify(payload) }),
   undo: (id: string) => req<{ session: AuctionSession; event: any }>(`/sessions/${id}/undo`, { method: "POST" }),
 
   recommendation: (id: string, playerId: string, currentBid: number) =>
@@ -123,4 +153,19 @@ export const api = {
     if (!res.ok) throw new Error("Import fallito");
     return res.json();
   },
+
+  // ---------------------- Player Intelligence ----------------------
+  playerIntelligence: (playerId: string) => req<PlayerIntelligence>(`/players/${encodeURIComponent(playerId)}/intelligence`),
+  intelligenceStatus: () => req<IntelligenceStatus>("/intelligence/status"),
+  importIntelligence: (payload: ManualImportPayload) =>
+    req<{ resolved: number; unresolved: { nome: string; squadra?: string }[]; updatedAt: string | null }>("/intelligence/import", {
+      method: "POST", body: JSON.stringify(payload),
+    }),
+  overridePlayerIntelligence: (playerId: string, override: Omit<ManualOverride, "setAt">) =>
+    req<PlayerIntelligence>(`/players/${encodeURIComponent(playerId)}/intelligence/override`, { method: "POST", body: JSON.stringify(override) }),
+  clearPlayerIntelligenceOverride: (playerId: string) =>
+    req<{ ok: true }>(`/players/${encodeURIComponent(playerId)}/intelligence/override`, { method: "DELETE" }),
+  refreshIntelligence: () => req<{ updatedAt: string | null; totalPlayers: number }>("/intelligence/refresh", { method: "POST" }),
 };
+
+export type { PenaltyRank, SetPieceRole };

@@ -51,6 +51,15 @@ export default function Listone(props: {
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
 
+  // Player Intelligence section 37: combinable filters.
+  const [soloRigoristi, setSoloRigoristi] = useState(false);
+  const [rigoristiRank1, setRigoristiRank1] = useState(false);
+  const [conCoppia, setConCoppia] = useState(false);
+  const [noBallottaggi, setNoBallottaggi] = useState(false);
+  const [piazzati, setPiazzati] = useState(false);
+  const [goalThreatMin, setGoalThreatMin] = useState("");
+  const [titolaritaMin, setTitolaritaMin] = useState("");
+
   useEffect(() => {
     api.teams().then(setTeams);
   }, []);
@@ -63,6 +72,13 @@ export default function Listone(props: {
         .listone(props.sessionId, {
           ruolo: ruolo || undefined, squadra: squadra || undefined, sortBy, order: "desc", q: q || undefined, limit: 300,
           onlyAvailable: onlyAvailable ? "true" : undefined,
+          soloRigoristi: soloRigoristi ? "true" : undefined,
+          rigoristiRank1: rigoristiRank1 ? "true" : undefined,
+          conCoppia: conCoppia ? "true" : undefined,
+          noBallottaggi: noBallottaggi ? "true" : undefined,
+          piazzati: piazzati ? "true" : undefined,
+          goalThreatMin: goalThreatMin || undefined,
+          titolaritaMin: titolaritaMin || undefined,
         })
         .then((res) => {
           if (cancelled) return;
@@ -75,7 +91,7 @@ export default function Listone(props: {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [props.sessionId, ruolo, squadra, sortBy, q, onlyAvailable]);
+  }, [props.sessionId, ruolo, squadra, sortBy, q, onlyAvailable, soloRigoristi, rigoristiRank1, conCoppia, noBallottaggi, piazzati, goalThreatMin, titolaritaMin]);
 
   return (
     <div className="modal-backdrop" onClick={props.onClose}>
@@ -124,6 +140,30 @@ export default function Listone(props: {
           </span>
         </div>
 
+        <div className="listone-controls">
+          <label className="listone-check">
+            <input type="checkbox" checked={soloRigoristi} onChange={(e) => setSoloRigoristi(e.target.checked)} /> solo rigoristi
+          </label>
+          <label className="listone-check">
+            <input type="checkbox" checked={rigoristiRank1} onChange={(e) => setRigoristiRank1(e.target.checked)} /> rigoristi #1
+          </label>
+          <label className="listone-check">
+            <input type="checkbox" checked={conCoppia} onChange={(e) => setConCoppia(e.target.checked)} /> con coppia identificata
+          </label>
+          <label className="listone-check">
+            <input type="checkbox" checked={noBallottaggi} onChange={(e) => setNoBallottaggi(e.target.checked)} /> no ballottaggi
+          </label>
+          <label className="listone-check">
+            <input type="checkbox" checked={piazzati} onChange={(e) => setPiazzati(e.target.checked)} /> piazzati
+          </label>
+          <label className="listone-check">
+            Goal Threat &gt; <input type="number" style={{ width: 50 }} value={goalThreatMin} onChange={(e) => setGoalThreatMin(e.target.value)} />
+          </label>
+          <label className="listone-check">
+            Titolari &gt; <input type="number" style={{ width: 50 }} value={titolaritaMin} onChange={(e) => setTitolaritaMin(e.target.value)} />%
+          </label>
+        </div>
+
         <div className="listone-table-wrap">
           <table className="listone-table">
             <thead>
@@ -139,6 +179,7 @@ export default function Listone(props: {
                 <th>Target</th>
                 <th>Max</th>
                 <th>Rischio</th>
+                <th title="Rigorista / Goal Threat / Piazzati / Ballottaggio / Coppia">Bonus</th>
                 <th></th>
               </tr>
             </thead>
@@ -167,6 +208,13 @@ export default function Listone(props: {
                     <td>{p.computed.prezzoObiettivo}</td>
                     <td>{p.computed.offertaMaxBase}</td>
                     <td className={p.rischio && p.rischio !== "BASSO" ? "warn" : "muted"}>{p.rischio || "-"}</td>
+                    <td className="listone-badges">
+                      {p.intelligence?.penaltyRank && <span className="tag" title="Rigorista">🎯 R{p.intelligence.penaltyRank}</span>}
+                      {p.intelligence?.goalThreatPercentile != null && <span className="tag" title="Goal Threat (percentile nel ruolo)">⚽ {p.intelligence.goalThreatPercentile}</span>}
+                      {p.intelligence && p.intelligence.setPieceValueScore > 0 && <span className="tag" title="Piazzati">🎯 SP</span>}
+                      {p.intelligence?.battleId && <span className="tag" title="Ballottaggio">↔</span>}
+                      {p.intelligence?.hasPairing && <span className="tag" title="Coppia/copertura disponibile">🔗</span>}
+                    </td>
                     <td className="listone-actions">
                       <button onClick={() => props.onDetail(p.id)}>Dettagli</button>
                       <button className="primary" disabled={props.readOnly || taken} onClick={() => props.onNominate(p)}>Chiama</button>
@@ -176,7 +224,7 @@ export default function Listone(props: {
               })}
               {!loading && players.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="empty-state">Nessun giocatore trovato.</td>
+                  <td colSpan={13} className="empty-state">Nessun giocatore trovato.</td>
                 </tr>
               )}
             </tbody>

@@ -4,6 +4,9 @@ import { getFormation } from "./formations";
 import { getStrategy } from "./strategies";
 import { getAuctionStyle } from "./auctionStyle";
 import { computeFormationFit, computeStrategyFit } from "./strategicFit";
+import type { PlayerIntelligence, PlayerIntelligenceStore } from "./intelligence/types";
+import { stalenessWeight } from "./intelligence/freshness";
+import { computePairValue } from "./intelligence/pairing";
 
 export function getManager(session: AuctionSession, managerId: string): ManagerState {
   const m = session.managers.find((mm) => mm.id === managerId);
@@ -126,6 +129,8 @@ export interface DynamicMaxFactors {
   auctionStyleAdjustment: number; // multiplier
   rosterNeedAdjustment: number; // multiplier
   concentrationAdjustment: number; // multiplier, my own overspend/saving vs plan in this famiglia
+  intelligenceAdjustment: number; // multiplier, bonus potential (rigori/piazzati/goal threat) — 1.0 when no signal
+  pairingUtilityBonus: number; // 0-0.12, backup/ballottaggio coverage of an owned player
   beforeCaps: number;
   budgetFeasibilityCap: number;
   rosterCompletionCap: number;
@@ -187,11 +192,69 @@ function computeSectorConcentrationAdjustment(session: AuctionSession, manager: 
 }
 
 /**
+ * Player Intelligence section 29/30/51: a bounded multiplier from bonus
+ * potential (rigori/piazzati/goal threat) — never a flat "+10 se
+ * rigorista". Prudente leans on the reliable (confidence+starter-backed)
+ * component only; Aggressivo also lets the upside component through.
+ * Strictly neutral (1.0) when the player has no imported signal at all.
+ */
+function computeIntelligenceMultiplier(intel: PlayerIntelligence | undefined, styleId: string): number {
+  if (!intel) return 1;
+  const hasSignal = intel.goalThreat.confidence !== "NONE" || intel.penalty.rank != null || intel.setPieces.setPieceValueScore > 0;
+  if (!hasSignal) return 1;
+  const stalenessFactor = stalenessWeight(intel.goalThreat.staleness);
+  const blended =
+    styleId === "PRUDENT" ? intel.bonusPotential.reliable
+    : styleId === "AGGRESSIVE" ? intel.bonusPotential.reliable * 0.5 + intel.bonusPotential.upside * 0.5
+    : intel.bonusPotential.reliable * 0.7 + intel.bonusPotential.upside * 0.3;
+  // Upside-only (see computeIntelligenceBoost in liveRank.ts for why: an
+  // assumed "50 = neutral" baseline is wrong here, since a player with only
+  // partial signal already scores below that just from confidence damping).
+  const bounded = Math.max(0, Math.min(0.15, (blended / 100) * 0.15 * stalenessFactor));
+  return 1 + bounded;
+}
+
+/**
+ * Section 31-34: if the candidate is a real backup/ballottaggio partner of
+ * a player I already own, the coverage they'd provide nudges the cap up —
+ * but only a little (section 31: "questo bonus deve essere limitato"), and
+ * it uses the dynamic PairValue engine so it evaporates once the slot's own
+ * budget (what I'd realistically pay here) makes the "backup" no longer
+ * proportionate to the risk it covers.
+ */
+function computePairingUtilityBonus(params: {
+  manager: ManagerState;
+  player: Player;
+  slotBudgetAnchor: number;
+  intelligence: PlayerIntelligenceStore | undefined;
+}): number {
+  const { manager, player, slotBudgetAnchor, intelligence } = params;
+  if (!intelligence) return 0;
+  const relevant = intelligence.pairings.filter(
+    (p) => p.secondaryPlayerId === player.id && (p.type === "DIRECT_BACKUP" || p.type === "BALLOT_PAIR")
+  );
+  let best = 0;
+  for (const pairing of relevant) {
+    const primaryOwned = manager.players.find((mp) => mp.playerId === pairing.primaryPlayerId);
+    if (!primaryOwned) continue;
+    const result = computePairValue(pairing, {
+      ownPrimary: true,
+      primaryPaidPrice: primaryOwned.paidPrice,
+      primaryImportance: 0.7,
+      secondaryCandidatePrice: slotBudgetAnchor,
+    });
+    const bonus = Math.min(0.12, (result.pairValue / 100) * 0.12);
+    if (bonus > best) best = bonus;
+  }
+  return best;
+}
+
+/**
  * Section 13/51: DynamicMax = SlotAnchoredMax (see computeSlotAnchoredMax)
  * × FormationFit × StrategyImportance × MarketAdjustment × ScarcityAdjustment
- * × AuctionStyleAdjustment × RosterNeedAdjustment, then hard-capped by
- * budget feasibility and roster completion (section 12: these never bend
- * regardless of style).
+ * × AuctionStyleAdjustment × RosterNeedAdjustment × IntelligenceAdjustment
+ * × (1 + PairingUtilityBonus), then hard-capped by budget feasibility and
+ * roster completion (section 12: these never bend regardless of style).
  */
 export function computeDynamicMax(params: {
   player: Player;
@@ -199,8 +262,9 @@ export function computeDynamicMax(params: {
   manager: ManagerState;
   slotsStillToBuy: number; // count of open roster slots excluding the one being bid on
   slot: RosterSlot | undefined;
+  intelligence?: PlayerIntelligenceStore;
 }): DynamicMaxFactors {
-  const { player, session, manager, slotsStillToBuy: slotsLeft, slot } = params;
+  const { player, session, manager, slotsStillToBuy: slotsLeft, slot, intelligence } = params;
   const formation = getFormation(session.settings.primaryFormation);
   const strategy = getStrategy(session.settings.strategyProfile);
   const style = getAuctionStyle(session.settings.auctionStyle);
@@ -233,9 +297,13 @@ export function computeDynamicMax(params: {
 
   const concentrationAdjustment = computeSectorConcentrationAdjustment(session, manager, player.computed.famiglia433);
 
+  const intelligenceAdjustment = computeIntelligenceMultiplier(intelligence?.players[player.id], style.id);
+  const pairingUtilityBonus = computePairingUtilityBonus({ manager, player, slotBudgetAnchor, intelligence });
+
   const beforeCaps = Math.round(
     anchorMax * formationFit * strategyImportance * marketAdjustment * scarcityAdjustment
       * auctionStyleAdjustment * rosterNeedAdjustment * concentrationAdjustment
+      * intelligenceAdjustment * (1 + pairingUtilityBonus)
   );
 
   // Hard caps (section 12) — never bend regardless of style.
@@ -258,7 +326,8 @@ export function computeDynamicMax(params: {
 
   return {
     basePlayerMax, slotBudgetAnchor, marginalUtilityAdjustment, formationFit, strategyImportance, marketAdjustment, scarcityAdjustment,
-    auctionStyleAdjustment, rosterNeedAdjustment, concentrationAdjustment, beforeCaps, budgetFeasibilityCap, rosterCompletionCap, dynamicMax,
+    auctionStyleAdjustment, rosterNeedAdjustment, concentrationAdjustment, intelligenceAdjustment, pairingUtilityBonus,
+    beforeCaps, budgetFeasibilityCap, rosterCompletionCap, dynamicMax,
   };
 }
 

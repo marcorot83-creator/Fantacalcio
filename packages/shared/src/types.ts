@@ -358,6 +358,20 @@ export interface BidRecommendation {
   scarcity: ScarcityInfo | null;
   reasons: string[];
   alternatives: AlternativeSuggestion[];
+  /** Player Intelligence section 28/35 — null when nothing is known about this player yet. */
+  intelligence: BidRecommendationIntelligence | null;
+}
+
+export interface BidRecommendationIntelligence {
+  lineupCategory: string;
+  starterProbability: number;
+  battleId: string | null;
+  penaltyRank: 1 | 2 | 3 | null;
+  goalThreatPercentile: number | null;
+  goalThreatTier: string | null;
+  goalThreatConfidence: string;
+  bonusPotential: number;
+  setPieceValueScore: number;
 }
 
 export interface AlternativeSuggestion {

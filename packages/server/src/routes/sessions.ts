@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import type { AuctionEventType, AuctionSession, PlayerDatabase, Player, FormationId, StrategyId, AuctionStyleId, MantraRole } from "@fanta/shared";
+import type { AuctionEventType, AuctionSession, PlayerDatabase, Player, FormationId, StrategyId, AuctionStyleId, MantraRole, PlayerIntelligenceStore } from "@fanta/shared";
 import {
   createNewAuctionSession, resetSessionInPlace, applyAuctionEvent, computeBidRecommendation,
   findAlternatives, simulateWhatIf, suggestNomination, buildAllOpponentReports, buildOpponentReport,
@@ -9,6 +9,7 @@ import {
   changeStrategyProfile, changeAuctionStyle, applyFormationChange, buildTargetRosterStructure,
   getFormation, getStrategy, getAuctionStyle, FORMATIONS, STRATEGIES, AUCTION_STYLES,
   computeStrategicFitScore, computeRoleImportance, computeFormationCoverage,
+  EMPTY_INTELLIGENCE_STORE, computePairValue,
 } from "@fanta/shared";
 import { store } from "../persistence";
 
@@ -20,7 +21,7 @@ function asyncHandler(fn: Handler) {
   };
 }
 
-export function sessionsRouter(getDb: () => PlayerDatabase): Router {
+export function sessionsRouter(getDb: () => PlayerDatabase, getIntelligence: () => PlayerIntelligenceStore = () => EMPTY_INTELLIGENCE_STORE): Router {
   const router = Router();
 
   async function requireSession(id: string): Promise<AuctionSession> {
@@ -262,7 +263,11 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
   router.get("/sessions/:id/listone", asyncHandler(async (req, res) => {
     const session = await requireSession(req.params.id);
     const db = getDb();
-    const { famiglia, ruolo, squadra, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable } = req.query as Record<string, string | undefined>;
+    const intelligence = getIntelligence();
+    const {
+      famiglia, ruolo, squadra, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable,
+      soloRigoristi, rigoristiRank1, goalThreatMin, conCoppia, titolaritaMin, noBallottaggi, piazzati,
+    } = req.query as Record<string, string | undefined>;
 
     let players = db.players;
     if (onlyAvailable === "true") {
@@ -281,13 +286,39 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       players = fuzzyFind(q, players, (p) => p.nome).filter((m) => m.score >= 0.4).map((m) => m.item);
     }
 
+    // Player Intelligence section 37: filtri combinabili con quelli sopra.
+    if (titolaritaMin) players = players.filter((p) => p.computed.titolarita >= Number(titolaritaMin));
+    if (soloRigoristi === "true") players = players.filter((p) => intelligence.players[p.id]?.penalty.rank != null);
+    if (rigoristiRank1 === "true") players = players.filter((p) => intelligence.players[p.id]?.penalty.rank === 1);
+    if (goalThreatMin) {
+      const min = Number(goalThreatMin);
+      players = players.filter((p) => {
+        const intel = intelligence.players[p.id];
+        return !!intel && intel.goalThreat.confidence !== "NONE" && intel.goalThreat.percentileWithinRole >= min;
+      });
+    }
+    if (conCoppia === "true") players = players.filter((p) => (intelligence.players[p.id]?.pairing.pairings.length ?? 0) > 0);
+    if (noBallottaggi === "true") players = players.filter((p) => !intelligence.players[p.id]?.lineup.battleId);
+    if (piazzati === "true") players = players.filter((p) => (intelligence.players[p.id]?.setPieces.setPieceValueScore ?? 0) > 0);
+
     const accessor = LISTONE_SORT_KEYS[sortBy ?? ""] ?? LISTONE_SORT_KEYS.indiceFanta;
     const dir = order === "asc" ? 1 : -1;
     players = [...players].sort((a, b) => (accessor(a) - accessor(b)) * dir);
 
     const withOwnership = players.slice(0, limit ? Number(limit) : 200).map((p) => {
       const st = session.playerStates[p.id];
-      if (!st || !TAKEN_STATUSES.has(st.status)) return { ...p, ownership: null };
+      const intel = intelligence.players[p.id];
+      const intelSummary = intel
+        ? {
+            lineupCategory: intel.lineup.category,
+            battleId: intel.lineup.battleId,
+            penaltyRank: intel.penalty.rank,
+            goalThreatPercentile: intel.goalThreat.confidence === "NONE" ? null : intel.goalThreat.percentileWithinRole,
+            setPieceValueScore: intel.setPieces.setPieceValueScore,
+            hasPairing: intel.pairing.pairings.length > 0,
+          }
+        : null;
+      if (!st || !TAKEN_STATUSES.has(st.status)) return { ...p, ownership: null, intelligence: intelSummary };
       const mgr = session.managers.find((m) => m.id === st.ownerManagerId);
       return {
         ...p,
@@ -297,22 +328,69 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
           managerName: mgr?.name ?? null,
           paidPrice: st.paidPrice,
         },
+        intelligence: intelSummary,
       };
     });
 
     res.json({ count: players.length, players: withOwnership });
   }));
 
+  /**
+   * Player Intelligence section 32/33: after buying a player, automatically
+   * check whether a real, still-available coverage exists and whether it's
+   * still worth it at what it would actually cost (not "always suggest a
+   * backup" — section 34).
+   */
+  function computeCoverageSuggestion(session: AuctionSession, db: PlayerDatabase, primaryPlayerId: string, intelligence: PlayerIntelligenceStore) {
+    const pairings = intelligence.pairings.filter(
+      (p) => p.primaryPlayerId === primaryPlayerId && (p.type === "DIRECT_BACKUP" || p.type === "TACTICAL_COVER" || p.type === "BALLOT_PAIR")
+    );
+    if (pairings.length === 0) return null;
+    const myManager = getMyManager(session);
+    const primaryPaid = myManager.players.find((mp) => mp.playerId === primaryPlayerId)?.paidPrice ?? null;
+
+    let best: {
+      pairingId: string; type: string; secondary: { id: string; nome: string; squadra: string };
+      targetBudget: number; dynamicMax: number; pairValue: number; recommend: string; reason: string;
+    } | null = null;
+
+    for (const pairing of pairings) {
+      const secondary = db.players.find((p) => p.id === pairing.secondaryPlayerId);
+      if (!secondary || describePlayerOwnership(session, secondary.id)) continue;
+      const roles = eligibleMantraRoles(secondary.ruoloMantra);
+      const slot = findOpenSlotForRoles(session.rosterSlots, roles);
+      if (!slot) continue;
+      const dmx = computeDynamicMax({
+        player: secondary, session, manager: myManager,
+        slotsStillToBuy: slotsStillToBuy(myManager, session.rosterSlots) - 1, slot, intelligence,
+      });
+      const result = computePairValue(pairing, {
+        ownPrimary: true, primaryPaidPrice: primaryPaid, primaryImportance: 0.7, secondaryCandidatePrice: slot.targetBudgetDynamic,
+      });
+      if (!best || result.pairValue > best.pairValue) {
+        best = {
+          pairingId: pairing.id, type: pairing.type,
+          secondary: { id: secondary.id, nome: secondary.nome, squadra: secondary.squadra },
+          targetBudget: slot.targetBudgetDynamic, dynamicMax: dmx.dynamicMax,
+          pairValue: result.pairValue, recommend: result.recommend, reason: result.reason,
+        };
+      }
+    }
+    return best;
+  }
+
   // --------------------- Events (section 25) ---------------------
   router.post("/sessions/:id/events", asyncHandler(async (req, res) => {
     const session = await requireSession(req.params.id);
+    const db = getDb();
     const { type, playerId, price, managerId, payload } = req.body ?? {};
     try {
-      const { session: next, event } = applyAuctionEvent(session, getDb(), {
+      const { session: next, event } = applyAuctionEvent(session, db, {
         type: type as AuctionEventType, playerId, price, managerId, payload,
       });
       await store.saveSession(next);
-      res.status(201).json({ session: next, event });
+      const coverage = type === "PLAYER_WON_BY_ME" && playerId ? computeCoverageSuggestion(next, db, playerId, getIntelligence()) : null;
+      res.status(201).json({ session: next, event, coverage });
     } catch (e: any) {
       res.status(400).json({ error: e.message });
     }
@@ -336,7 +414,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
     const player = db.players.find((p) => p.id === req.params.playerId);
     if (!player) return res.status(404).json({ error: "player not found" });
     const currentBid = Number(req.query.currentBid ?? player.computed.prezzoObiettivo);
-    const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState });
+    const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState, intelligence: getIntelligence() });
     res.json(rec);
   }));
 
@@ -511,7 +589,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
         const ownedNominate = describePlayerOwnership(session, player.id);
         if (ownedNominate) return { parsed, reply: `${player.nome} è già ${ownedNominate}.` };
         const currentBid = parsed.price ?? player.computed.prezzoObiettivo;
-        const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState });
+        const rec = computeBidRecommendation({ player, currentBid, players: db.players, graduatorie: db.graduatorie, session, marketState: session.marketState, intelligence: getIntelligence() });
         return { parsed, recommendation: rec, reply: `${rec.headline}\n${rec.reasons.join("\n")}` };
       }
       case "MAX_SPEND": {
@@ -521,6 +599,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
         const dmx = computeDynamicMax({
           player, session, manager: myManager,
           slotsStillToBuy: slotsStillToBuy(myManager, session.rosterSlots) - (slot ? 1 : 0), slot,
+          intelligence: getIntelligence(),
         });
         const aggressive = computeAggressiveMax({ session, dynamicMax: dmx.dynamicMax, slot });
         const extraNote = aggressive.financeable && aggressive.extra > 0 ? ` Con un override ${getAuctionStyle(session.settings.auctionStyle).name.toLowerCase()} potresti arrivare a ${aggressive.aggressiveMax} (${aggressive.note})` : "";
@@ -574,7 +653,61 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
       case "PAIR_QUERY": {
         if (!player) return { parsed, reply: "Di chi vuoi sapere il ballottaggio/coppia?" };
         const pairings = findPairingInfo(db, player.id);
-        return { parsed, pairings, reply: describePairing(player.nome, pairings) };
+        const intel = getIntelligence().players[player.id];
+        const battle = intel?.lineup.battleId ? getIntelligence().battles.find((b) => b.id === intel.lineup.battleId) : null;
+        let reply = describePairing(player.nome, pairings);
+        if (battle) {
+          const lines = battle.players.map((bp) => `${db.players.find((p) => p.id === bp.playerId)?.nome ?? bp.playerId} ${bp.probability}%`);
+          reply = `Vero ballottaggio: ${lines.join(" vs ")} (confidence ${Math.round(battle.confidence * 100)}%).\n${reply}`;
+        }
+        if (intel && intel.pairing.pairings.length > 0) {
+          const myManager = getMyManager(session);
+          for (const pairing of intel.pairing.pairings) {
+            const isPrimary = pairing.primaryPlayerId === player.id;
+            const otherId = isPrimary ? pairing.secondaryPlayerId : pairing.primaryPlayerId;
+            const other = db.players.find((p) => p.id === otherId);
+            if (!other) continue;
+            if (isPrimary && myManager.players.some((mp) => mp.playerId === player.id)) {
+              const roles = eligibleMantraRoles(other.ruoloMantra);
+              const slot = findOpenSlotForRoles(session.rosterSlots, roles);
+              if (slot && !describePlayerOwnership(session, other.id)) {
+                const primaryPaid = myManager.players.find((mp) => mp.playerId === player.id)?.paidPrice ?? null;
+                const result = computePairValue(pairing, { ownPrimary: true, primaryPaidPrice: primaryPaid, primaryImportance: 0.7, secondaryCandidatePrice: slot.targetBudgetDynamic });
+                reply += `\n${other.nome} (${pairing.type.toLowerCase()}): target ${slot.targetBudgetDynamic} — ${result.recommend === "COPRILO" ? "COPRILO" : result.recommend === "VALUTA" ? "valutalo, non prioritario" : "NON SERVE"}. ${result.reason}`;
+              }
+            }
+          }
+        }
+        return { parsed, pairings, reply };
+      }
+      case "RIGORISTI_QUERY": {
+        const intel = getIntelligence();
+        let candidates = db.players.filter((p) => intel.players[p.id]?.penalty.rank != null);
+        if (parsed.family) candidates = candidates.filter((p) => p.computed.famiglia433 === parsed.family);
+        if (parsed.teamName) candidates = candidates.filter((p) => p.squadra === parsed.teamName);
+        candidates = candidates.filter((p) => !describePlayerOwnership(session, p.id));
+        candidates.sort((a, b) => (intel.players[a.id]!.penalty.rank! - intel.players[b.id]!.penalty.rank!) || (intel.players[b.id]!.penalty.penaltyValueScore - intel.players[a.id]!.penalty.penaltyValueScore));
+        const top = candidates.slice(0, 8);
+        const reply = top.length
+          ? top.map((p) => `${p.nome} (${p.squadra}) — rigorista #${intel.players[p.id]!.penalty.rank}, Penalty Value ${intel.players[p.id]!.penalty.penaltyValueScore}/100`).join("\n")
+          : "Nessun rigorista noto libero con questi criteri. Importa i dati sui rigoristi per ottenere risultati più ricchi.";
+        return { parsed, reply };
+      }
+      case "GOAL_THREAT_QUERY": {
+        const intel = getIntelligence();
+        const minThreshold = parsed.threshold ?? 70;
+        let candidates = db.players.filter((p) => {
+          const gi = intel.players[p.id]?.goalThreat;
+          return gi && gi.confidence !== "NONE" && gi.percentileWithinRole >= minThreshold;
+        });
+        if (parsed.family) candidates = candidates.filter((p) => p.computed.famiglia433 === parsed.family);
+        candidates = candidates.filter((p) => !describePlayerOwnership(session, p.id));
+        candidates.sort((a, b) => intel.players[b.id]!.goalThreat.percentileWithinRole - intel.players[a.id]!.goalThreat.percentileWithinRole);
+        const top = candidates.slice(0, 8);
+        const reply = top.length
+          ? top.map((p) => `${p.nome} (${p.squadra}) — GTI ${intel.players[p.id]!.goalThreat.percentileWithinRole}° percentile ruolo (${intel.players[p.id]!.goalThreat.tier}), titolarità ${p.computed.titolarita}%`).join("\n")
+          : "Nessun giocatore con Goal Threat noto sopra soglia. Importa statistiche gol/xG per avere questa lettura.";
+        return { parsed, reply };
       }
       case "RECOMMEND_ROLE":
       case "NEED_UNDER_PRICE": {

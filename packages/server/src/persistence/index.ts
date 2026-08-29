@@ -7,5 +7,5 @@ export const store: Store = process.env.DATABASE_URL
   ? (require("./postgres").postgresStore as Store)
   : (require("./sqlite").sqliteStore as Store);
 
-export type { SessionSummary, Store } from "./types";
+export type { SessionSummary, Store, IntelligenceRawData } from "./types";
 export { mergePlayerDatabase } from "./merge";

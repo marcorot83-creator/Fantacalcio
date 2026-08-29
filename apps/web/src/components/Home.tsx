@@ -78,7 +78,7 @@ export default function Home(props: {
         </div>
       )}
 
-      <h3 style={{ marginTop: 36, color: "var(--muted)", fontSize: "0.8rem", textTransform: "uppercase" }}>Archivio aste</h3>
+      <h3 className="home-archive-title">Archivio aste</h3>
       <div className="session-list">
         {sessions.length === 0 && <div className="empty-state">Nessuna asta ancora. Comincia con "Inizia nuova asta".</div>}
         {sessions.map((s) => (

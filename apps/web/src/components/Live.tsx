@@ -14,6 +14,10 @@ import SettingsPanel from "./SettingsPanel";
 import BidInput from "./BidInput";
 import { computeSemaforoClient } from "../semaforo";
 
+const HEADLINE_ICON: Record<string, string> = {
+  ATTACCA: "🚀", COMPRA: "✅", RILANCIA: "⚠️", MOLLA: "⛔",
+};
+
 export default function Live(props: { sessionId: string; onHome: () => void }) {
   const { sessionId, onHome } = props;
   const [session, setSession] = useState<AuctionSession | null>(null);
@@ -178,7 +182,7 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
 
   const graduatoriaFamily = activePlayer?.computed.famiglia433;
 
-  if (!session) return <div className="empty-state">Caricamento sessione…</div>;
+  if (!session) return <div className="loading-screen"><span className="spinner" />Caricamento sessione…</div>;
 
   const me = session.managers.find((m) => m.isMe)!;
 
@@ -195,13 +199,13 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
           </button>
         )}
         <div className="spacer" />
-        <button onClick={() => { setShowOpponents(false); setShowListone(true); }}>Listone</button>
-        <button onClick={() => { setShowListone(false); setShowOpponents(true); }}>Avversari</button>
-        <button onClick={handleUndo} disabled={readOnly}>UNDO</button>
+        <button onClick={() => { setShowOpponents(false); setShowListone(true); }}>📋 Listone</button>
+        <button onClick={() => { setShowListone(false); setShowOpponents(true); }}>⚔️ Avversari</button>
+        <button onClick={handleUndo} disabled={readOnly}>↺ UNDO</button>
         {session.status === "LIVE" && (
-          <button onClick={handleCloseAuction}>{confirmClose ? "Confermi chiusura?" : "Chiudi asta"}</button>
+          <button onClick={handleCloseAuction}>{confirmClose ? "Confermi chiusura?" : "🔒 Chiudi asta"}</button>
         )}
-        <button className="danger" onClick={handleDeleteAuction}>{confirmDelete ? "Confermi eliminazione?" : "Elimina asta"}</button>
+        <button className="danger" onClick={handleDeleteAuction}>{confirmDelete ? "Confermi eliminazione?" : "🗑 Elimina"}</button>
       </div>
 
       <IndicatorBar session={session} formationShape={dashboardConfig?.formationShape ?? null} />
@@ -264,7 +268,10 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
 
               {recommendation && (
                 <>
-                  <div className={`headline ${recommendation.action}`}>{recommendation.headline}</div>
+                  <div className={`headline ${recommendation.action}`}>
+                    <span>{HEADLINE_ICON[recommendation.action] ?? ""}</span>
+                    {recommendation.headline}
+                  </div>
                   <ul className="reasons">
                     {recommendation.reasons.map((r, i) => <li key={i}>{r}</li>)}
                   </ul>
@@ -272,10 +279,10 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
               )}
 
               <div className="big-buttons">
-                <button className="big primary" onClick={handleRilancia} disabled={readOnly}>RILANCIA</button>
-                <button className="big" onClick={handlePassa} disabled={readOnly}>PASSA</button>
-                <button className="big" style={{ background: "var(--green)", borderColor: "var(--green)" }} onClick={handlePreso} disabled={readOnly}>PRESO</button>
-                <button className="big danger" onClick={() => setDetailPlayerId("__sell__")} disabled={readOnly}>VENDUTO AD ALTRO</button>
+                <button className="big primary" onClick={handleRilancia} disabled={readOnly}>⬆️ RILANCIA</button>
+                <button className="big" onClick={handlePassa} disabled={readOnly}>✋ PASSA</button>
+                <button className="big" style={{ background: "var(--green)", borderColor: "var(--green)" }} onClick={handlePreso} disabled={readOnly}>✅ PRESO</button>
+                <button className="big danger" onClick={() => setDetailPlayerId("__sell__")} disabled={readOnly}>➡️ VENDUTO AD ALTRO</button>
               </div>
 
               {detailPlayerId === "__sell__" && (

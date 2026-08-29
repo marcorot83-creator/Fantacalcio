@@ -26,7 +26,7 @@ export default function App() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="empty-state">Caricamento…</div>;
+  if (loading) return <div className="loading-screen"><span className="spinner" />Caricamento…</div>;
 
   if (view.name === "home") {
     return (

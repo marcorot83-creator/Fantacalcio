@@ -1,5 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import type { AuctionEventType, AuctionSession, PlayerDatabase, Player, FormationId, StrategyId, AuctionStyleId } from "@fanta/shared";
+import type { AuctionEventType, AuctionSession, PlayerDatabase, Player, FormationId, StrategyId, AuctionStyleId, MantraRole } from "@fanta/shared";
 import {
   createNewAuctionSession, resetSessionInPlace, applyAuctionEvent, computeBidRecommendation,
   findAlternatives, simulateWhatIf, suggestNomination, buildAllOpponentReports, buildOpponentReport,
@@ -262,7 +262,7 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
   router.get("/sessions/:id/listone", asyncHandler(async (req, res) => {
     const session = await requireSession(req.params.id);
     const db = getDb();
-    const { famiglia, squadra, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable } = req.query as Record<string, string | undefined>;
+    const { famiglia, ruolo, squadra, q, sortBy = "indiceFanta", order = "desc", limit, onlyAvailable } = req.query as Record<string, string | undefined>;
 
     let players = db.players;
     if (onlyAvailable === "true") {
@@ -271,7 +271,11 @@ export function sessionsRouter(getDb: () => PlayerDatabase): Router {
         return !st || !TAKEN_STATUSES.has(st.status);
       });
     }
-    if (famiglia) players = players.filter((p) => p.computed.famiglia433 === famiglia);
+    // Section: fine-grained Mantra role filter (Por/Dd/Ds/Dc/B/E/M/C/T/W/A/Pc)
+    // — supersedes the coarse `famiglia` (Famiglia433) filter, which collapses
+    // B/E/T/W into a single "Jolly" bucket and so can't isolate them.
+    if (ruolo) players = players.filter((p) => eligibleMantraRoles(p.ruoloMantra).includes(ruolo as MantraRole));
+    else if (famiglia) players = players.filter((p) => p.computed.famiglia433 === famiglia);
     if (squadra) players = players.filter((p) => p.squadra === squadra);
     if (q) {
       players = fuzzyFind(q, players, (p) => p.nome).filter((m) => m.score >= 0.4).map((m) => m.item);

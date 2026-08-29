@@ -1,17 +1,25 @@
 import { useEffect, useState } from "react";
 import { api, type ListonePlayer } from "../api";
-import type { Famiglia433, Player } from "@fanta/shared";
+import type { MantraRole, Player } from "@fanta/shared";
 
-const FAMIGLIE: { key: Famiglia433 | ""; label: string }[] = [
+// Full fine-grained Mantra role set, pitch order — not the coarse
+// Famiglia433 taxonomy (which collapses B/E/T/W into a single "Jolly"
+// bucket and so can't isolate them). Kept as plain literals here rather
+// than importing a value from @fanta/shared (its CJS barrel isn't
+// statically analyzable by Rollup for named-export bundling).
+const RUOLI: { key: MantraRole | ""; label: string; title?: string }[] = [
   { key: "", label: "Tutti" },
   { key: "Por", label: "Por" },
   { key: "Dd", label: "Dd" },
   { key: "Ds", label: "Ds" },
   { key: "Dc", label: "Dc" },
-  { key: "Jolly", label: "Jolly" },
-  { key: "A", label: "A" },
-  { key: "C", label: "C" },
+  { key: "B", label: "B", title: "Braccetto" },
+  { key: "E", label: "E", title: "Esterno" },
   { key: "M", label: "M" },
+  { key: "C", label: "C" },
+  { key: "T", label: "T", title: "Trequartista" },
+  { key: "W", label: "W", title: "Ala" },
+  { key: "A", label: "A" },
   { key: "Pc", label: "Pc" },
 ];
 
@@ -30,10 +38,10 @@ export default function Listone(props: {
   onClose: () => void;
   onNominate: (player: Player) => void;
   onDetail: (playerId: string) => void;
-  initialFamiglia?: Famiglia433;
+  initialRuolo?: MantraRole;
   readOnly?: boolean;
 }) {
-  const [famiglia, setFamiglia] = useState<Famiglia433 | "">(props.initialFamiglia ?? "");
+  const [ruolo, setRuolo] = useState<MantraRole | "">(props.initialRuolo ?? "");
   const [squadra, setSquadra] = useState("");
   const [teams, setTeams] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState("indiceFanta");
@@ -53,7 +61,7 @@ export default function Listone(props: {
     const t = setTimeout(() => {
       api
         .listone(props.sessionId, {
-          famiglia: famiglia || undefined, squadra: squadra || undefined, sortBy, order: "desc", q: q || undefined, limit: 300,
+          ruolo: ruolo || undefined, squadra: squadra || undefined, sortBy, order: "desc", q: q || undefined, limit: 300,
           onlyAvailable: onlyAvailable ? "true" : undefined,
         })
         .then((res) => {
@@ -67,7 +75,7 @@ export default function Listone(props: {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [props.sessionId, famiglia, squadra, sortBy, q, onlyAvailable]);
+  }, [props.sessionId, ruolo, squadra, sortBy, q, onlyAvailable]);
 
   return (
     <div className="modal-backdrop" onClick={props.onClose}>
@@ -78,11 +86,12 @@ export default function Listone(props: {
         </div>
 
         <div className="listone-tabs">
-          {FAMIGLIE.map((f) => (
+          {RUOLI.map((f) => (
             <button
               key={f.key || "tutti"}
-              className={famiglia === f.key ? "primary" : ""}
-              onClick={() => setFamiglia(f.key)}
+              className={ruolo === f.key ? "primary" : ""}
+              title={f.title}
+              onClick={() => setRuolo(f.key)}
             >
               {f.label}
             </button>

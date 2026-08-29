@@ -11,6 +11,7 @@ import PlayerDetailModal from "./PlayerDetailModal";
 import Listone from "./Listone";
 import OpponentsPanel from "./OpponentsPanel";
 import SettingsPanel from "./SettingsPanel";
+import BidInput from "./BidInput";
 import { computeSemaforoClient } from "../semaforo";
 
 export default function Live(props: { sessionId: string; onHome: () => void }) {
@@ -258,7 +259,7 @@ export default function Live(props: { sessionId: string; onHome: () => void }) {
 
               <div className="bid-controls">
                 <label>Prezzo attuale</label>
-                <input type="number" value={currentBid} onChange={(e) => setCurrentBid(Number(e.target.value))} />
+                <BidInput key={activePlayer.id} value={currentBid} onCommit={setCurrentBid} disabled={readOnly} autoFocus />
               </div>
 
               {recommendation && (

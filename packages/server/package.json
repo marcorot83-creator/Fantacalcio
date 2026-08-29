@@ -8,7 +8,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "import-excel": "tsx src/importExcel.ts",
-    "test": "tsx test/acceptance.test.ts"
+    "test": "tsx test/acceptance.test.ts && tsx test/marginal-value.test.ts"
   },
   "dependencies": {
     "@fanta/shared": "*",

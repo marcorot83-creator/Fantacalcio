@@ -23,6 +23,27 @@ export function findOpenSlotForRoles(rosterSlots: RosterSlot[], roles: MantraRol
   return [...open].sort((a, b) => a.protectPriority - b.protectPriority)[0];
 }
 
+/**
+ * Section 1/34: when the current slot's own plan has already collapsed
+ * (e.g. Pc2 after an expensive Pc1), name the purchase that caused it so
+ * the reasoning is legible ("hai già Malen come Pc premium a 164") instead
+ * of just a smaller number with no story behind it.
+ */
+function describeSiblingInvestment(session: AuctionSession, players: Player[], famiglia: Famiglia433, excludeSlotKey: string): string | null {
+  const myManager = getMyManager(session);
+  const siblingSlots = session.rosterSlots.filter((s) => s.famiglia === famiglia && s.slotKey !== excludeSlotKey && s.playerId != null);
+  if (siblingSlots.length === 0) return null;
+  let best: { nome: string; price: number } | null = null;
+  for (const s of siblingSlots) {
+    const paid = myManager.players.find((mp) => mp.playerId === s.playerId)?.paidPrice;
+    const p = players.find((pp) => pp.id === s.playerId);
+    if (paid == null || !p) continue;
+    if (!best || paid > best.price) best = { nome: p.nome, price: paid };
+  }
+  if (!best) return null;
+  return `Hai già ${best.nome} (${best.price} crediti) in questo reparto: il resto del budget va protetto per gli altri ruoli.`;
+}
+
 export function computeBidRecommendation(params: {
   player: Player;
   currentBid: number;
@@ -51,7 +72,18 @@ export function computeBidRecommendation(params: {
   const dynamicMax = dmx.dynamicMax;
   const aggressive = computeAggressiveMax({ session, dynamicMax, slot });
 
+  // Static, player-only baseline (still shown in the UI as "Target" /
+  // "Base Max" so the absolute market value stays visible) — kept unchanged
+  // for backward compatibility with existing callers/UI.
   const prezzoObiettivo = Math.round(player.computed.prezzoObiettivo * style.targetAggressiveness);
+  // The actually-operative target for ATTACCA/COMPRA/RILANCIA banding:
+  // rescaled proportionally onto the new slot-anchored dynamicMax, so once a
+  // role is already satisfied the bands shrink along with the ceiling
+  // instead of staying pinned to the player's own market-wide target.
+  const targetRatio = Math.min(0.98, Math.max(0.5, player.computed.prezzoObiettivo / player.computed.offertaMaxBase));
+  const bandTarget = Math.max(1, Math.round(dynamicMax * targetRatio));
+  const siblingNote = slot ? describeSiblingInvestment(session, players, famiglia, slot.slotKey) : null;
+
   const alternatives = findAlternatives({
     players,
     graduatorie,
@@ -71,37 +103,45 @@ export function computeBidRecommendation(params: {
   // it must actually be financeable and only kicks in once the plain dynamicMax is exhausted.
   const ceiling = aggressive.financeable ? aggressive.aggressiveMax : dynamicMax;
 
+  // Section 1/15/34: a saturated slot (its own plan collapsed well below the
+  // player's market value) gets its story told up front, before the price
+  // banding — this is the "hai già Malen come Pc premium" explanation.
+  const saturated = slot != null && dmx.slotBudgetAnchor < player.computed.offertaMaxBase * 0.6;
+  if (saturated && siblingNote) reasons.push(siblingNote);
+
   if (currentBid > ceiling) {
     action = "MOLLA";
     headline = `MOLLA A ${currentBid}.`;
     reasons.push(`Prezzo ${currentBid} sopra la red line${aggressive.financeable ? " (anche includendo l'override)" : ""} (${ceiling}).`);
-    if (dmx.budgetFeasibilityCap < player.computed.offertaMaxBase) {
+    if (saturated && slot) {
+      reasons.push(`${slot.slotKey} ha ora un budget target di ${dmx.slotBudgetAnchor} crediti: il valore di mercato del giocatore (${player.computed.offertaMaxBase}) non è più il riferimento.`);
+    } else if (dmx.budgetFeasibilityCap < player.computed.offertaMaxBase) {
       reasons.push(`Il budget residuo (${myManager.budgetResidual}) non regge oltre ${dmx.budgetFeasibilityCap} tenendo 1 credito per ogni slot ancora da coprire.`);
     }
     if (alternatives.length > 0) {
       reasons.push(`Restano ${alternatives.length} alternative valide: ${alternatives.slice(0, 3).map((a) => a.nome).join(", ")}.`);
     }
     reasons.push("Il prezzo già raggiunto è sunk cost: non inseguire il nome.");
-  } else if (slotAlreadyCovered && currentBid > prezzoObiettivo) {
+  } else if (slotAlreadyCovered && currentBid > bandTarget) {
     action = "MOLLA";
     headline = `MOLLA A ${currentBid}.`;
     reasons.push(`Nel tuo ${formation.name} + ${strategy.name} questo ruolo non ha uno slot strutturale scoperto: non serve pagare sopra target.`);
-  } else if (currentBid <= prezzoObiettivo * 0.97) {
+  } else if (currentBid <= bandTarget * 0.97) {
     action = "ATTACCA";
     headline = `ATTACCA. RILANCIA FINO A ${dynamicMax}.`;
-    reasons.push(`Prezzo attuale ${currentBid} è sotto il target (${prezzoObiettivo}).`);
+    reasons.push(`Prezzo attuale ${currentBid} è sotto il target per la tua rosa (${bandTarget}).`);
     if (slot) reasons.push(`Copre lo slot ${slot.slotKey} (${slot.profilo}), ancora scoperto.`);
     if (strategicFitScore >= 70) reasons.push(`StrategicFitScore ${strategicFitScore}: coerente con ${formation.name} + ${strategy.name}.`);
     if (scarcity) reasons.push(`Scarsità ${famiglia}: ${scarcity.level} (indice ${scarcity.scarcityIndex}).`);
-  } else if (currentBid <= prezzoObiettivo * 1.06) {
+  } else if (currentBid <= bandTarget * 1.06) {
     action = "COMPRA";
     headline = `COMPRA A ${currentBid} SE SERVE.`;
-    reasons.push(`Prezzo ${currentBid} è in linea con il target (${prezzoObiettivo}).`);
+    reasons.push(`Prezzo ${currentBid} è in linea con il target per la tua rosa (${bandTarget}).`);
     if (slot) reasons.push(`Slot ${slot.slotKey} ancora aperto: acquisto coerente col piano.`);
   } else {
     action = "RILANCIA";
     headline = `RILANCIA FINO A ${dynamicMax}.`;
-    reasons.push(`Prezzo ${currentBid} è sopra il target (${prezzoObiettivo}) ma sotto la red line dinamica (${dynamicMax}).`);
+    reasons.push(`Prezzo ${currentBid} è sopra il target per la tua rosa (${bandTarget}) ma sotto la red line dinamica (${dynamicMax}).`);
     if (strategicFitScore < 50) {
       reasons.push(`StrategicFitScore basso (${strategicFitScore}) per ${formation.name} + ${strategy.name}: non forzare oltre il necessario.`);
     } else if (scarcity && (scarcity.level === "alta" || scarcity.level === "critica")) {

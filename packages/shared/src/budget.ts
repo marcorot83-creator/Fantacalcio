@@ -1,4 +1,4 @@
-import type { AuctionSession, ManagerState, Player, ReallocationEvent, RosterSlot } from "./types";
+import type { AuctionSession, Famiglia433, ManagerState, Player, ReallocationEvent, RosterSlot } from "./types";
 import { uid, nowIso } from "./util";
 import { getFormation } from "./formations";
 import { getStrategy } from "./strategies";
@@ -117,12 +117,15 @@ export function slotsStillToBuy(manager: ManagerState, rosterSlots: RosterSlot[]
 
 export interface DynamicMaxFactors {
   basePlayerMax: number;
+  slotBudgetAnchor: number;
+  marginalUtilityAdjustment: number; // multiplier, how much of the player's own quality leaks above the slot's plan
   formationFit: number; // multiplier
   strategyImportance: number; // multiplier
   marketAdjustment: number; // multiplier
   scarcityAdjustment: number; // multiplier
   auctionStyleAdjustment: number; // multiplier
   rosterNeedAdjustment: number; // multiplier
+  concentrationAdjustment: number; // multiplier, my own overspend/saving vs plan in this famiglia
   beforeCaps: number;
   budgetFeasibilityCap: number;
   rosterCompletionCap: number;
@@ -130,10 +133,59 @@ export interface DynamicMaxFactors {
 }
 
 /**
- * Section 13: DynamicMax = BasePlayerMax × FormationFit × StrategyImportance
- * × MarketAdjustment × ScarcityAdjustment × AuctionStyleAdjustment ×
- * RosterNeedAdjustment, then hard-capped by budget feasibility and roster
- * completion (section 12: these never bend regardless of style).
+ * Diminishing marginal utility (section 2/3/14/15 of the marginal-value
+ * correction): what a player is worth is anchored on what the specific open
+ * slot they'd fill is CURRENTLY planned to cost — not on the player's own
+ * static market value. A slot's own plan already prices in same-role depth
+ * decay (Pc1 >> Pc2 >> Pc3 — see rosterStructure.ts's per-tier geometric
+ * curve) and any overspend already reallocated away from it by
+ * reallocateBudget() after an earlier purchase in the same role. When no
+ * open slot exists at all for this role (the need is already fully met),
+ * fall back to a steep fraction of the player's own value.
+ *
+ * A materially better player than what the slot was planned for still pulls
+ * some headroom above the plan (section 16: "value opportunity" must stay
+ * reachable) — but only a modest share of that gap leaks through, so the
+ * slot's own diminishing-value curve remains the dominant signal rather
+ * than the player's raw market price.
+ */
+function computeSlotAnchoredMax(basePlayerMax: number, slot: RosterSlot | undefined): { slotBudgetAnchor: number; marginalUtilityAdjustment: number; anchorMax: number } {
+  const slotBudgetAnchor = slot ? slot.targetBudgetDynamic : Math.max(1, Math.round(basePlayerMax * 0.22));
+  const qualityGap = Math.max(0, basePlayerMax - slotBudgetAnchor);
+  const qualityLeakage = qualityGap * 0.18;
+  const anchorMax = slotBudgetAnchor + qualityLeakage;
+  const marginalUtilityAdjustment = slotBudgetAnchor > 0 ? anchorMax / slotBudgetAnchor : 1;
+  return { slotBudgetAnchor, marginalUtilityAdjustment, anchorMax };
+}
+
+/**
+ * Section 6/10/14: SectorInvestmentPressure — how much I MYSELF already
+ * overspent (or saved) against plan on slots of this same famiglia. This is
+ * distinct from the generic cross-manager market-inflation index: paying
+ * 164 for a slot planned at 145 makes the NEXT purchase in that same sector
+ * more sensitive, regardless of what the wider market is doing. Saving
+ * instead leaves a little more room, but only mildly — it's an allowance,
+ * not a rebate.
+ */
+function computeSectorConcentrationAdjustment(session: AuctionSession, manager: ManagerState, famiglia: Famiglia433): number {
+  const filledSameFamily = session.rosterSlots.filter((s) => s.famiglia === famiglia && s.playerId != null);
+  if (filledSameFamily.length === 0) return 1;
+  let overspend = 0;
+  for (const s of filledSameFamily) {
+    const paid = manager.players.find((mp) => mp.playerId === s.playerId)?.paidPrice;
+    if (paid == null) continue;
+    overspend += paid - s.targetBudgetInitial;
+  }
+  const pct = overspend / Math.max(1, session.settings.crediti);
+  return Math.min(1.15, Math.max(0.55, 1 - pct * 1.6));
+}
+
+/**
+ * Section 13/51: DynamicMax = SlotAnchoredMax (see computeSlotAnchoredMax)
+ * × FormationFit × StrategyImportance × MarketAdjustment × ScarcityAdjustment
+ * × AuctionStyleAdjustment × RosterNeedAdjustment, then hard-capped by
+ * budget feasibility and roster completion (section 12: these never bend
+ * regardless of style).
  */
 export function computeDynamicMax(params: {
   player: Player;
@@ -148,6 +200,7 @@ export function computeDynamicMax(params: {
   const style = getAuctionStyle(session.settings.auctionStyle);
 
   const basePlayerMax = player.computed.offertaMaxBase;
+  const { slotBudgetAnchor, marginalUtilityAdjustment, anchorMax } = computeSlotAnchoredMax(basePlayerMax, slot);
 
   const formationFitScore = computeFormationFit(player, formation);
   const formationFit = 0.8 + (formationFitScore / 100) * 0.4; // 0.8 - 1.2
@@ -158,6 +211,10 @@ export function computeDynamicMax(params: {
   const marketStats = session.marketState.perFamiglia[player.computed.famiglia433];
   const marketAdjustment = marketStats ? Math.min(1.25, Math.max(0.85, marketStats.adjustedMarketIndex)) : 1.0;
 
+  // Section 20: scarcity only matters combined WITH need (Urgency = Need ×
+  // Scarcity, not Need + Scarcity) — multiplying it onto anchorMax (which
+  // already collapsed once the role/slot is satisfied) means a scarce-but-
+  // already-covered role no longer irrationally inflates the cap.
   const scarcityInfo = session.marketState.scarcity[player.computed.famiglia433];
   const scarcityAdjustment =
     scarcityInfo?.level === "critica" ? 1.1 :
@@ -168,8 +225,11 @@ export function computeDynamicMax(params: {
 
   const rosterNeedAdjustment = !slot ? 0.85 : slot.protectPriority <= 6 ? 1.08 : 1.0;
 
+  const concentrationAdjustment = computeSectorConcentrationAdjustment(session, manager, player.computed.famiglia433);
+
   const beforeCaps = Math.round(
-    basePlayerMax * formationFit * strategyImportance * marketAdjustment * scarcityAdjustment * auctionStyleAdjustment * rosterNeedAdjustment
+    anchorMax * formationFit * strategyImportance * marketAdjustment * scarcityAdjustment
+      * auctionStyleAdjustment * rosterNeedAdjustment * concentrationAdjustment
   );
 
   // Hard caps (section 12) — never bend regardless of style.
@@ -181,13 +241,14 @@ export function computeDynamicMax(params: {
   // Sanity ceiling well above the two spec-mandated hard caps: stops a
   // pathological all-factors-at-once alignment from running away, without
   // masking the (legitimate, and much smaller) swing the style multiplier
-  // alone is supposed to contribute.
-  const sanityCeiling = basePlayerMax * 1.6;
+  // alone is supposed to contribute. Scaled off anchorMax (not the player's
+  // raw basePlayerMax) so a saturated slot stays capped even here.
+  const sanityCeiling = anchorMax * 1.6;
   const dynamicMax = Math.max(1, Math.min(beforeCaps, budgetFeasibilityCap, rosterCompletionCap, sanityCeiling));
 
   return {
-    basePlayerMax, formationFit, strategyImportance, marketAdjustment, scarcityAdjustment,
-    auctionStyleAdjustment, rosterNeedAdjustment, beforeCaps, budgetFeasibilityCap, rosterCompletionCap, dynamicMax,
+    basePlayerMax, slotBudgetAnchor, marginalUtilityAdjustment, formationFit, strategyImportance, marketAdjustment, scarcityAdjustment,
+    auctionStyleAdjustment, rosterNeedAdjustment, concentrationAdjustment, beforeCaps, budgetFeasibilityCap, rosterCompletionCap, dynamicMax,
   };
 }
 
